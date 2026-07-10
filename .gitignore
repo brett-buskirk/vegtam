@@ -1,6 +1,10 @@
 .DS_Store
 *.log
 
+# python bytecode from the dev-only screenshot generator
+__pycache__/
+*.pyc
+
 # local agent settings — machine-specific, never shared
 .claude/settings.local.json
 
