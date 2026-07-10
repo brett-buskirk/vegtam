@@ -1,5 +1,7 @@
 # vegtam
 
+[![Shellcheck](https://github.com/brett-buskirk/vegtam/actions/workflows/shellcheck.yml/badge.svg)](https://github.com/brett-buskirk/vegtam/actions/workflows/shellcheck.yml)
+
 **The wanderer — a pocket CLI for whatever repo you're standing in.**
 
 Odin walks Midgard in disguise under the name *Vegtam*. This tool is that mode: it works on
@@ -79,7 +81,7 @@ Fast and local by default; add `--fetch` to refresh ahead/behind from the remote
 Your local branches, newest commit first — each with its upstream tracking state (`↑ahead`/
 `↓behind`, `[gone]`, or `local-only`), whether it's merged into the default branch, and its age —
 followed by the branches on `origin` you don't have locally. Purely descriptive; it never deletes
-anything (that's `tidy`, later). `--fetch` refreshes tracking and remote branches first.
+anything (that's what [`tidy`](#tidy) is for). `--fetch` refreshes tracking and remote branches first.
 
 ### `prs`
 
@@ -139,9 +141,9 @@ a fork when you can't push to origin) and prompts for the rest. Extra flags pass
 
 ## Roadmap
 
-The views and safe actions ship today. Still ahead:
+The views and safe actions ship today, and every push is `shellcheck`-gated in CI. Still ahead:
 
-- **polish** — a `shellcheck` CI gate and `--json` output where it helps
+- **`--json`** output where it helps, for piping into other tools
 - **v1.0.0** — public, `curl`-installable, tagged
 
 See [ROADMAP.md](ROADMAP.md). Anything remote-mutating or destructive beyond that safe local set is

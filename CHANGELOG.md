@@ -7,6 +7,12 @@ All notable changes to vegtam are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
+- **Shellcheck CI gate** — `.github/workflows/shellcheck.yml` runs `bash -n` + `shellcheck` on every
+  push and pull request, matching the pack's convention. README carries the status badge.
+
+## [0.4.0]
+
+### Added
 - **`vegtam sync`** — fetch, then fast-forward the current branch to its upstream. Never merges or
   rewrites history: a diverged branch is reported and left alone, and git's own `--ff-only` refuses
   to overwrite uncommitted work.
