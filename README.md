@@ -48,6 +48,9 @@ without them, the local git views still work.
 
 ```
 vegtam [status]      one-screen briefing on the current repo (the default)
+vegtam branches      local + remote branches: tracking, merged, stale
+vegtam prs           open pull requests with their CI status
+vegtam log           timeline of commits, merged PRs, and releases
 vegtam help          the menu
 vegtam <cmd> help    detail & options for any command
 vegtam --version     print the version
@@ -66,11 +69,28 @@ One glance tells you where you stand:
 Fast and local by default; add `--fetch` to refresh ahead/behind from the remote first. Respects
 `NO_COLOR` and prints plain text when piped.
 
+### `branches`
+
+Your local branches, newest commit first — each with its upstream tracking state (`↑ahead`/
+`↓behind`, `[gone]`, or `local-only`), whether it's merged into the default branch, and its age —
+followed by the branches on `origin` you don't have locally. Purely descriptive; it never deletes
+anything (that's `tidy`, later). `--fetch` refreshes tracking and remote branches first.
+
+### `prs`
+
+Open pull requests, each with a CI glyph (`✓` pass · `✗` fail · `●` running · `·` none), its
+source branch, author, and age. The ones you authored are tagged `(you)`.
+
+### `log`
+
+A newest-first timeline of what changed: commits on the current branch (`●`), merged PRs (`⑃`),
+and releases (`⚑`). `--since <window>` sets how far back to look — `6h`, `3d`, `2w` (default),
+`1mo`. Commits always work; the GitHub events need `gh`.
+
 ## Roadmap
 
-`status` ships today. The rest arrives one safe, reviewable piece at a time:
+The views ship today. The rest arrives one safe, reviewable piece at a time:
 
-- **more views** — `branches`, `prs`, `log`
 - **security & freshness** — `health`: Dependabot alerts, outdated dependencies, unpinned actions,
   degrading gracefully where access is denied
 - **safe local actions** — `sync` (fast-forward only), `tidy` (prune merged local branches,

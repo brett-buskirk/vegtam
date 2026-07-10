@@ -17,7 +17,7 @@
 # shellcheck disable=SC2059  # color vars are fixed ANSI codes, deliberately embedded in format strings
 set -uo pipefail
 
-VERSION="0.1.0"
+VERSION="0.2.0"
 
 # ── palette — color only on a TTY, and never when NO_COLOR is set ─────────────
 # Same convention as the rest of the pack: if stdout isn't a terminal (piped,
@@ -35,6 +35,58 @@ note(){ printf "    ${DIM}%s${X}\n" "$1"; }                    # a dim aside whe
 # Compact a git relative date ("2 hours ago" -> "2h") so a whole status line fits
 # on one row. Mirrors huginn's status renderer.
 short(){ sed -E 's/ years?/y/;s/ months?/mo/;s/ weeks?/w/;s/ days?/d/;s/ hours?/h/;s/ minutes?/m/;s/ seconds?/s/;s/ ago//;s/ //g' <<<"${1:-}"; }
+
+# Compact age of a unix timestamp ("3d", "2w"). Companion to short(): that one
+# reshapes git's worded relative dates, this one works straight off an epoch.
+age_short(){
+  local now diff; now="$(date +%s)"; diff=$(( now - ${1:-0} )); [ "$diff" -lt 0 ] && diff=0
+  if   [ "$diff" -lt 3600 ];    then printf '%dm'  $(( diff/60 ))
+  elif [ "$diff" -lt 86400 ];   then printf '%dh'  $(( diff/3600 ))
+  elif [ "$diff" -lt 604800 ];  then printf '%dd'  $(( diff/86400 ))
+  elif [ "$diff" -lt 2592000 ]; then printf '%dw'  $(( diff/604800 ))
+  else                               printf '%dmo' $(( diff/2592000 )); fi
+}
+
+# Turn a compact window (6h, 3d, 2w, 1mo) into a `git log --since` phrase. Returns
+# non-zero on a malformed window so the caller can complain instead of guessing.
+since_to_gitdate(){
+  [[ "${1:-}" =~ ^([0-9]+)(mo|[dwh])$ ]] || return 1
+  local n="${BASH_REMATCH[1]}" u="${BASH_REMATCH[2]}"
+  case "$u" in
+    h)  printf '%s hours ago'  "$n";;
+    d)  printf '%s days ago'   "$n";;
+    w)  printf '%s weeks ago'  "$n";;
+    mo) printf '%s months ago' "$n";;
+  esac
+}
+
+# The repo's default branch — read from the local origin/HEAD pointer, else "main".
+default_branch(){ local d; d="$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##')"; printf '%s' "${d:-main}"; }
+
+# A ref to test "is this merged?" against: prefer origin/<default> (what's actually
+# merged upstream), fall back to the local default branch, then HEAD.
+default_ref(){
+  local d="${1:-main}"
+  if   git rev-parse --verify -q "refs/remotes/origin/$d" >/dev/null 2>&1; then printf 'origin/%s' "$d"
+  elif git rev-parse --verify -q "refs/heads/$d"          >/dev/null 2>&1; then printf '%s' "$d"
+  else printf 'HEAD'; fi
+}
+
+# The current GitHub login, resolved once and memoized (used to highlight "your"
+# PRs). Empty when gh is missing or unauthenticated — callers treat that as "unknown".
+GH_LOGIN=""; GH_LOGIN_SET=0
+gh_login(){ [ "$GH_LOGIN_SET" = 1 ] || { GH_LOGIN="$(gh api user --jq .login 2>/dev/null || true)"; GH_LOGIN_SET=1; }; printf '%s' "$GH_LOGIN"; }
+
+# Boil a bag of CI state/conclusion words down to one verdict: pass|fail|pending|none.
+# Shared by status (a commit's checks) and prs (a PR's statusCheckRollup). Tokenizes
+# to alpha words first so commas, brackets, and casing don't matter.
+classify_ci(){
+  local all; all="$(printf '%s\n' "${1:-}" | grep -oiE '[A-Za-z_]+' || true)"
+  [ -z "$all" ] && { echo none; return; }
+  grep -qiE 'fail|cancel|timed_out|action_required|error' <<<"$all" && { echo fail; return; }
+  grep -qiE 'pending|queued|in_progress|waiting|expected|stale|null' <<<"$all" && { echo pending; return; }
+  echo pass
+}
 
 # ── repo resolution — everything Vegtam knows comes from the current directory ─
 # Confirm we're inside a git work tree, find its root, and (best-effort) resolve a
@@ -202,24 +254,207 @@ cmd_status(){
   printf "\n"
 }
 
-# Roll up a commit's CI into one word: pass | fail | pending | none. Combines the
-# check-runs API (GitHub Actions & most apps) with the older commit-status API
-# (some CI still posts there), so we don't miss a signal from either source.
+# Roll up a commit's CI into one word. Combines the check-runs API (GitHub Actions
+# & most apps) with the older commit-status API (some CI still posts there), so we
+# don't miss a signal from either source, then defers to classify_ci for the verdict.
 ci_rollup(){
   local sha="${1:-}"; [ -z "$sha" ] && { echo none; return; }
-  local runs states all
+  local runs states
   runs="$(gh api "repos/$SLUG/commits/$sha/check-runs" --jq '.check_runs[] | (.conclusion // "pending")' 2>/dev/null || true)"
   states="$(gh api "repos/$SLUG/commits/$sha/status"     --jq '.statuses[].state' 2>/dev/null || true)"
-  all="$(printf '%s\n%s\n' "$runs" "$states" | grep -v '^$' || true)"
-  [ -z "$all" ] && { echo none; return; }
-  grep -qiE 'failure|cancel|timed_out|action_required|^error$' <<<"$all" && { echo fail; return; }
-  grep -qiE 'pending|queued|in_progress|waiting|null'          <<<"$all" && { echo pending; return; }
-  echo pass
+  classify_ci "$(printf '%s\n%s' "$runs" "$states")"
 }
 
 # Exact open count for the current repo via the search API — one call, and it
 # separates PRs from issues (which the repo's open_issues_count conflates).
 gh_count(){ gh api -X GET search/issues --jq '.total_count' -f q="repo:$SLUG $1" 2>/dev/null || true; }
+
+# ── branches — local + remote branches, purely descriptive (no pruning here) ──
+cmd_branches(){
+  is_help "${1:-}" && { help_branches; return 0; }
+  local fetch=0 a
+  for a in "$@"; do case "$a" in
+    -f|--fetch) fetch=1;;
+    -*) printf "  ${Y}ignoring unknown option: %s${X}\n" "$a";;
+  esac; done
+  resolve_repo || return 1
+  [ "$fetch" = 1 ] && { printf "  ${DIM}fetching…${X}\n"; git fetch -q --prune --all 2>/dev/null || true; }
+
+  local def cur defref; def="$(default_branch)"; defref="$(default_ref "$def")"
+  cur="$(git symbolic-ref --short HEAD 2>/dev/null || echo detached)"
+  # Local branches already merged into the default — one membership set, tested per branch.
+  local mergedset; mergedset="$(git for-each-ref --format='%(refname:short)' --merged "$defref" refs/heads 2>/dev/null || true)"
+
+  printf "\n  ${BD}vegtam branches${X}  ${DIM}·  %s  ·  default %s${X}\n\n" "${SLUG:-$REPO_NAME}" "$def"
+
+  # ── local branches, newest commit first ──
+  # \x1f separators: upstream:short and upstream:track are routinely empty, and a
+  # tab IFS would collapse the empties and misalign every field after them.
+  local n_local=0 n_merged=0 b up track ts
+  while IFS=$'\x1f' read -r b up track ts; do
+    [ -z "$b" ] && continue
+    n_local=$((n_local+1))
+    # "merged" flags a feature branch fully folded into the default — a tidy candidate.
+    # The default branch is trivially merged into itself, so it's never tagged or counted.
+    local merged=0
+    if grep -qx "$b" <<<"$mergedset" && [ "$b" != "$def" ]; then merged=1; n_merged=$((n_merged+1)); fi
+    # Pad the plain name first, THEN colorize — color escapes would throw off %-Ns width.
+    local pad; pad="$(printf '%-26s' "$b")"
+    local marker="  " bc="$pad"
+    if   [ "$b" = "$cur" ]; then marker="${C}▸${X} "; bc="${C}${BD}${pad}${X}"
+    elif [ "$b" = "$def" ]; then bc="${G}${pad}${X}"; fi
+    # tracking + merge state
+    local st=""
+    if   [ -z "$up" ];      then st="${DIM}local-only${X}"
+    elif [ -n "$track" ];   then st="${Y}${track}${X}"        # e.g. [ahead 2, behind 1] or [gone]
+    else                         st="${DIM}up to date${X}"; fi
+    [ "$merged" = 1 ] && st="$st  ${G}merged${X}"
+    printf "  %s%s  %s  ${DIM}· %s${X}\n" "$marker" "$bc" "$st" "$(age_short "${ts:-0}")"
+  done < <(git for-each-ref --sort=-committerdate \
+             --format=$'%(refname:short)\x1f%(upstream:short)\x1f%(upstream:track)\x1f%(committerdate:unix)' \
+             refs/heads 2>/dev/null)
+
+  # ── remote branches with no local counterpart — what's on origin you don't have ──
+  local -a remote_only=(); local rb rts
+  while IFS=$'\x1f' read -r rb rts; do
+    rb="${rb#origin/}"; [ -z "$rb" ] && continue; [ "$rb" = "HEAD" ] && continue
+    git show-ref --verify -q "refs/heads/$rb" && continue      # already have it locally
+    remote_only+=("$rb"$'\x1f'"$rts")
+  done < <(git for-each-ref --sort=-committerdate \
+             --format=$'%(refname:short)\x1f%(committerdate:unix)' refs/remotes/origin 2>/dev/null)
+
+  if [ "${#remote_only[@]}" -gt 0 ]; then
+    printf "\n  ${DIM}on origin, not local${X}\n"
+    local shown=0 e rname rt
+    for e in "${remote_only[@]}"; do
+      [ "$shown" -ge 12 ] && break
+      IFS=$'\x1f' read -r rname rt <<<"$e"
+      printf "    ${DIM}∙${X} %-26s  ${DIM}· %s${X}\n" "$rname" "$(age_short "${rt:-0}")"
+      shown=$((shown+1))
+    done
+    [ "${#remote_only[@]}" -gt 12 ] && note "… and $(( ${#remote_only[@]} - 12 )) more on origin."
+  fi
+
+  printf "\n  ${BD}%d local${X} ${DIM}·${X} ${G}%d merged${X} ${DIM}·${X} ${DIM}%d remote-only${X}\n\n" \
+    "$n_local" "$n_merged" "${#remote_only[@]}"
+}
+
+# ── prs — open pull requests with their check status; highlight your own ──────
+cmd_prs(){
+  is_help "${1:-}" && { help_prs; return 0; }
+  resolve_repo || return 1
+  printf "\n  ${BD}vegtam prs${X}  ${DIM}·  %s  ·  open pull requests${X}\n\n" "${SLUG:-$REPO_NAME}"
+  if [ -z "$SLUG" ]; then note "no github.com remote — prs needs a GitHub repo."; printf "\n"; return 0; fi
+  if ! have gh;      then note "gh not installed — prs needs the GitHub CLI."; printf "\n"; return 0; fi
+
+  # One list call. statusCheckRollup rides along so we show each PR's CI without a
+  # per-PR round-trip; its elements are check-runs (conclusion/status) or legacy
+  # status contexts (state), so we coalesce whichever field is present.
+  local rows
+  rows="$(gh pr list -R "$SLUG" --state open --limit 50 \
+    --json number,title,author,headRefName,isDraft,createdAt,statusCheckRollup \
+    --jq '.[] | [ (.number|tostring), .title, (.author.login // "?"), .headRefName, (.isDraft|tostring), .createdAt, ([.statusCheckRollup[]? | (.conclusion // .state // .status // "")] | join(",")) ] | join("\u001f")' 2>/dev/null || true)"
+
+  if [ -z "$rows" ]; then
+    # Tell "genuinely no open PRs" apart from "couldn't read the repo".
+    if gh repo view "$SLUG" >/dev/null 2>&1; then printf "  ${G}✓ no open pull requests${X}\n\n"
+    else note "couldn't read $SLUG on GitHub — no access, or the network is down."; printf "\n"; fi
+    return 0
+  fi
+
+  local mylogin; mylogin="$(gh_login)"
+  local n=0 mine=0 num title author branch draft created ciraw
+  while IFS=$'\x1f' read -r num title author branch draft created ciraw; do
+    [ -z "$num" ] && continue
+    n=$((n+1))
+    local ci cistr; ci="$(classify_ci "$ciraw")"
+    case "$ci" in
+      pass) cistr="${G}✓${X}";; fail) cistr="${R}✗${X}";; pending) cistr="${Y}●${X}";; *) cistr="${DIM}·${X}";;
+    esac
+    local you="" dtag=""
+    [ -n "$mylogin" ] && [ "$author" = "$mylogin" ] && { you="  ${C}(you)${X}"; mine=$((mine+1)); }
+    [ "$draft" = "true" ] && dtag="  ${DIM}[draft]${X}"
+    local age; age="$(age_short "$(date -d "$created" +%s 2>/dev/null || date +%s)")"
+    printf "  %s ${BD}#%-4s${X} %s%s%s\n" "$cistr" "$num" "$title" "$dtag" "$you"
+    printf "       ${DIM}%s ← @%s · %s ago${X}\n" "$branch" "$author" "$age"
+  done <<< "$rows"
+
+  printf "\n  ${BD}%d open${X}%s\n\n" "$n" "$([ "$mine" -gt 0 ] && printf " ${DIM}·${X} ${C}%d yours${X}" "$mine")"
+}
+
+# ── log — a timeline of what changed: commits, merged PRs, releases ───────────
+cmd_log(){
+  is_help "${1:-}" && { help_log; return 0; }
+  local since="2w"
+  while [ $# -gt 0 ]; do case "$1" in
+    --since) shift; since="${1:-2w}";;
+    -*) printf "  ${Y}ignoring unknown option: %s${X}\n" "$1";;
+  esac; shift; done
+  resolve_repo || return 1
+
+  local sincegit; sincegit="$(since_to_gitdate "$since")" \
+    || { printf "\n  ${R}invalid --since window:${X} %s ${DIM}(expected e.g. 6h, 3d, 2w, 1mo)${X}\n\n" "$since"; return 1; }
+  local since_epoch since_iso
+  since_epoch="$(date -d "$sincegit" +%s 2>/dev/null || echo 0)"
+  since_iso="$(date -d "$sincegit" +%Y-%m-%d 2>/dev/null || true)"
+
+  # Accumulate events in memory (no temp files, no stored state): each is
+  # "epoch \x1f type \x1f fieldA \x1f fieldB", sorted newest-first at the end.
+  local -a EV=()
+  local at h msg
+
+  # commits on the current branch (local, fast) — merges are skipped, since a
+  # merged PR shows up as its own event below.
+  while IFS=$'\x1f' read -r at h msg; do
+    [ -z "$at" ] && continue
+    EV+=("$at"$'\x1f'"commit"$'\x1f'"$h"$'\x1f'"$msg")
+  done < <(git log --no-merges --since="$sincegit" --format=$'%at\x1f%h\x1f%s' HEAD 2>/dev/null)
+
+  # merged PRs + releases within the window (network, best-effort)
+  if [ -n "$SLUG" ] && have gh; then
+    local num title mergedAt tag rname pub
+    while IFS=$'\x1f' read -r num title mergedAt; do
+      [ -z "$num" ] && continue
+      at="$(date -d "$mergedAt" +%s 2>/dev/null)" || continue
+      EV+=("$at"$'\x1f'"pr"$'\x1f'"$num"$'\x1f'"$title")
+    done < <(gh pr list -R "$SLUG" --state merged --limit 50 --search "merged:>=$since_iso" \
+              --json number,title,mergedAt \
+              --jq '.[] | [(.number|tostring), .title, .mergedAt] | join("\u001f")' 2>/dev/null)
+    while IFS=$'\x1f' read -r tag rname pub; do
+      [ -z "$tag" ] && continue
+      at="$(date -d "$pub" +%s 2>/dev/null)" || continue
+      [ "$at" -lt "$since_epoch" ] && continue
+      # A release name often just repeats the tag ("v1.2.0" or "v1.2.0 — subtitle").
+      # Keep only the part after the tag so the line reads "⚑ v1.2.0 subtitle", not
+      # "⚑ v1.2.0 v1.2.0 — subtitle".
+      local sub=""
+      if [ -n "$rname" ] && [ "$rname" != "$tag" ]; then
+        if [ "${rname#"$tag"}" != "$rname" ]; then
+          sub="$(sed -E 's/^[[:space:]]*[—:._-]+[[:space:]]*//' <<<"${rname#"$tag"}")"
+        else sub="$rname"; fi
+      fi
+      EV+=("$at"$'\x1f'"release"$'\x1f'"$tag"$'\x1f'"$sub")
+    done < <(gh release list -R "$SLUG" --limit 20 --json tagName,name,publishedAt \
+              --jq '.[] | [.tagName, (.name // ""), .publishedAt] | join("\u001f")' 2>/dev/null)
+  fi
+
+  printf "\n  ${BD}vegtam log${X}  ${DIM}·  %s  ·  since %s${X}\n\n" "${SLUG:-$REPO_NAME}" "$since"
+  if [ "${#EV[@]}" -eq 0 ]; then note "nothing in the last $since."; printf "\n"; return 0; fi
+
+  local total="${#EV[@]}" CAP=50 n=0 type fa fb
+  while IFS=$'\x1f' read -r at type fa fb; do
+    [ "$n" -ge "$CAP" ] && break
+    case "$type" in
+      pr)      printf "  ${DIM}%-4s${X}  ${C}⑃${X} ${BD}#%s${X} %s ${DIM}(merged)${X}\n" "$(age_short "$at")" "$fa" "$fb";;
+      release) printf "  ${DIM}%-4s${X}  ${M}⚑${X} ${BD}%s${X} %s\n"                    "$(age_short "$at")" "$fa" "$fb";;
+      commit)  printf "  ${DIM}%-4s${X}  ${DIM}● %s${X} %s\n"                            "$(age_short "$at")" "$fa" "$fb";;
+    esac
+    n=$((n+1))
+  done < <(printf '%s\n' "${EV[@]}" | sort -t $'\x1f' -k1,1nr)
+
+  [ "$total" -gt "$CAP" ] && note "… and $((total-CAP)) more — narrow the window with --since."
+  printf "\n  ${BD}%d events${X} ${DIM}since %s${X}\n\n" "$total" "$since"
+}
 
 # ── per-command help ──────────────────────────────────────────────────────────
 help_status(){
@@ -236,18 +471,48 @@ help_status(){
   printf "  ${BD}Options${X}\n"
   printf "    -f, --fetch   git fetch first for fresh ahead/behind ${DIM}(network)${X}\n\n"
 }
+help_branches(){
+  printf "\n  ${BD}vegtam branches${X} [--fetch]\n\n"
+  printf "  Your local branches — newest commit first — each with its upstream tracking\n"
+  printf "  state ${DIM}(↑ahead/↓behind, [gone], or local-only)${X}, whether it's merged into the\n"
+  printf "  default branch, and how long since its last commit. Then the branches on ${BD}origin${X}\n"
+  printf "  you don't have locally. ${BD}Read-only${X} — it reports, it never deletes.\n\n"
+  printf "  ${BD}Options${X}\n"
+  printf "    -f, --fetch   git fetch --prune first, for fresh tracking + remote branches ${DIM}(network)${X}\n\n"
+}
+help_prs(){
+  printf "\n  ${BD}vegtam prs${X}\n\n"
+  printf "  Open pull requests on the current repo, each with a CI glyph ${DIM}(${X}${G}✓${X}${DIM} pass · ${X}${R}✗${X}${DIM} fail ·\n"
+  printf "  ${X}${Y}●${X}${DIM} running · · none)${X}, its source branch, author, and age. PRs you authored are\n"
+  printf "  tagged ${C}(you)${X}. ${DIM}Network — one 'gh pr list'. Degrades to a note without gh, without a\n"
+  printf "  GitHub remote, or when you can't read the repo.${X}\n\n"
+}
+help_log(){
+  printf "\n  ${BD}vegtam log${X} [--since <window>]\n\n"
+  printf "  A newest-first timeline of what changed in this repo: commits on the current\n"
+  printf "  branch ${DIM}(●)${X}, merged PRs ${DIM}(⑃)${X}, and releases ${DIM}(⚑)${X}. The GitHub events need gh; the\n"
+  printf "  commit stream always works.\n\n"
+  printf "  ${BD}Options${X}\n"
+  printf "    --since <window>   how far back to look — ${BD}6h${X} · ${BD}3d${X} · ${BD}2w${X} ${DIM}(default)${X} · ${BD}1mo${X}\n\n"
+}
 
 # ── help ──────────────────────────────────────────────────────────────────────
 cmd_help(){
   printf "\n  ${BD}vegtam${X} ${DIM}— the wanderer · one repo, wherever you're standing · v%s${X}\n\n" "$VERSION"
   printf "  ${DIM}inspect${X}\n"
   printf "    ${BD}status${X}                one-screen briefing on the current repo ${DIM}(default)${X}\n"
+  printf "    ${BD}branches${X}              local + remote branches: tracking, merged, stale\n"
+  printf "    ${BD}prs${X}                   open pull requests with their CI status\n"
+  printf "    ${BD}log${X} [--since w]       timeline of commits, merged PRs, and releases\n"
   printf "    ${BD}help${X}                  this menu\n\n"
   printf "  ${DIM}run${X} ${BD}vegtam <command> help${X} ${DIM}for details & options on any command.${X}\n\n"
 }
 
 case "${1:-status}" in
   status)              shift 2>/dev/null || true; cmd_status "$@";;
+  branches|br)         shift; cmd_branches "$@";;
+  prs|pulls)           shift; cmd_prs "$@";;
+  log|activity)        shift; cmd_log "$@";;
   help|-h|--help)      cmd_help;;
   -V|--version|version) printf "vegtam %s\n" "$VERSION";;
   *) printf "\n  ${R}unknown command: %s${X}\n" "$1"; cmd_help; exit 1;;

@@ -7,6 +7,20 @@ All notable changes to vegtam are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
+- **`vegtam branches`** — local branches (newest first) with upstream tracking, merged-into-default
+  status, and age, plus the branches on `origin` you don't have locally. Read-only. `--fetch`
+  refreshes tracking + remote branches.
+- **`vegtam prs`** — open pull requests with a per-PR CI rollup glyph, source branch, author, and
+  age; the ones you authored are tagged `(you)`.
+- **`vegtam log`** — a newest-first timeline of commits (current branch), merged PRs, and releases,
+  windowed by `--since` (default `2w`). Commits work offline; the GitHub events need `gh`.
+
+### Changed
+- Factored the CI verdict logic into a shared `classify_ci` helper used by both `status` and `prs`.
+
+## [0.1.0]
+
+### Added
 - **`vegtam status`** — the flagship one-screen briefing on the current repo: name, description,
   visibility, default branch, fork/ahead-behind relationship, current branch + dirty state +
   stashes, latest commit with its CI rollup, and open PR/issue counts. `--fetch` refreshes
