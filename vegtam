@@ -17,7 +17,7 @@
 # shellcheck disable=SC2059  # color vars are fixed ANSI codes, deliberately embedded in format strings
 set -uo pipefail
 
-VERSION="1.0.0"
+VERSION="1.0.1"
 
 # ── palette — color only on a TTY, and never when NO_COLOR is set ─────────────
 # Same convention as the rest of the pack: if stdout isn't a terminal (piped,
@@ -1031,6 +1031,21 @@ cmd_pr(){
     return 1
   fi
 
+  # Refuse early if the branch has no commits the base doesn't already have — otherwise
+  # gh pushes the branch and prompts for a title before discovering there's nothing to
+  # open ("No commits between …"). Compare against origin/<default> (what GitHub compares),
+  # falling back to the local default; only a *successful* zero count refuses, so a base
+  # we can't resolve just hands off to gh as before. Uncommitted changes don't count —
+  # a PR is made of commits.
+  local base ahead
+  base="$(default_ref "$def")"
+  if [ "$base" != "HEAD" ] && ahead="$(git rev-list --count "$base..HEAD" 2>/dev/null)" && [ "$ahead" -eq 0 ]; then
+    printf "\n  ${Y}nothing to open a PR for${X} ${DIM}— %s has no commits that %s doesn't already have.${X}\n" "$branch" "$base"
+    printf "  ${DIM}commit your work first%s, then run 'vegtam pr' again.${X}\n\n" \
+      "$([ -n "$(git status --porcelain 2>/dev/null)" ] && printf ' (your changes are still uncommitted)')"
+    return 1
+  fi
+
   printf "\n  ${BD}vegtam pr${X}  ${DIM}·  %s  ·  %s → %s${X}\n" "$SLUG" "$branch" "$def"
   printf "  ${DIM}handing off to 'gh pr create' — it pushes the branch if needed, and prompts for the rest.${X}\n\n"
   gh pr create "$@"
@@ -1123,9 +1138,10 @@ help_branch(){
 help_pr(){
   printf "\n  ${BD}vegtam pr${X} [gh pr create options…]\n\n"
   printf "  Open a pull request from the current branch — a thin wrapper over ${BD}gh pr create${X}.\n"
-  printf "  Refuses on a detached HEAD or the default branch; otherwise hands straight off to gh,\n"
-  printf "  which pushes the branch if needed ${DIM}(via a fork when you can't push to origin)${X} and\n"
-  printf "  prompts for title and body. Any extra flags pass through.\n\n"
+  printf "  Refuses on a detached HEAD, the default branch, or a branch with no commits beyond the\n"
+  printf "  base ${DIM}(nothing to open)${X}; otherwise hands straight off to gh, which pushes the branch if\n"
+  printf "  needed ${DIM}(via a fork when you can't push to origin)${X} and prompts for title and body. Any\n"
+  printf "  extra flags pass through.\n\n"
   printf "  ${BD}Examples${X}\n"
   printf "    vegtam pr                    ${DIM}interactive — gh prompts for everything${X}\n"
   printf "    vegtam pr --fill --web       ${DIM}title/body from commits, then open it in the browser${X}\n"

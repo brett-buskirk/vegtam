@@ -6,7 +6,16 @@ All notable changes to vegtam are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-07-10
+
+Everything merged since the `v1.0.0` tag: the `pr` bugfix plus the pre-public docs/legal pass.
+
 ### Fixed
+- **`vegtam pr` no longer hands off a branch with nothing to open.** It now checks up front that the
+  branch has commits beyond the base (`origin/<default>`, falling back to the local default) and
+  refuses with a clear message when it doesn't — instead of letting `gh` push the branch and prompt
+  for a title before failing with `No commits between …`. Uncommitted changes don't count; a PR is
+  made of commits. (A comparison that can't be resolved still hands off to `gh` as before.)
 - **`LICENSE`** now carries the full MIT text (the scaffold shipped only the title + copyright line,
   so GitHub reported the license as "Other" despite the README/CHANGELOG saying MIT).
 - **`.gitignore`** actually ignores `.env` files and keys now, matching what `CONTRIBUTING.md` promises.

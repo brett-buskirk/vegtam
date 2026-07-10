@@ -150,9 +150,9 @@ pushed.
 ### `pr`
 
 Open a pull request from the current branch — a thin wrapper over `gh pr create`. It refuses on a
-detached HEAD or the default branch, then hands off to `gh`, which pushes the branch if needed (via
-a fork when you can't push to origin) and prompts for the rest. Extra flags pass straight through
-(`vegtam pr --fill --draft`).
+detached HEAD, the default branch, or a branch with no commits beyond the base (nothing to open),
+then hands off to `gh`, which pushes the branch if needed (via a fork when you can't push to origin)
+and prompts for the rest. Extra flags pass straight through (`vegtam pr --fill --draft`).
 
 ## Status
 
