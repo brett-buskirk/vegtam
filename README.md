@@ -151,15 +151,13 @@ detached HEAD or the default branch, then hands off to `gh`, which pushes the br
 a fork when you can't push to origin) and prompts for the rest. Extra flags pass straight through
 (`vegtam pr --fill --draft`).
 
-## Roadmap
+## Status
 
-The views (with `--json`) and safe actions ship today, and every push is `shellcheck`-gated in CI.
-Still ahead:
+**v1.0.0** — stable and feature-complete for v1: five inspect views (each with `--json`), four safe
+local actions, two-level help, `shellcheck`-gated CI, one self-contained script.
 
-- **v1.0.0** — public, `curl`-installable, tagged
-
-See [ROADMAP.md](ROADMAP.md). Anything remote-mutating or destructive beyond that safe local set is
-deliberately out of scope — that's not what a wanderer is for.
+Anything remote-mutating or destructive beyond the safe local set is deliberately out of scope —
+that's not what a wanderer is for. See [ROADMAP.md](ROADMAP.md) for what's intentionally deferred.
 
 ## License
 

@@ -6,6 +6,15 @@ All notable changes to vegtam are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-07-10
+
+First stable release. Vegtam is a single, self-contained Bash script that walks into any one repo —
+including repos you don't own — and gives you a fast, read-first lay of the land plus a few safe,
+local actions. Feature-complete for v1: five inspect views (each with `--json`), four safe actions
+(`sync`, `tidy`, `branch`, `pr`), two-level help, graceful degradation on missing `gh`/`jq`/access,
+`shellcheck`-gated CI, and a `curl`-to-`~/.local/bin` install. Needs only `bash` + `git`; `gh` and
+`jq` enhance.
+
 ### Added
 - **`--json` on every inspect view** (`status`, `branches`, `prs`, `log`, `health`) — machine-readable
   output for piping into other tools, built with `jq` so escaping is always correct. Fields that

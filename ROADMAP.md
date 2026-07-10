@@ -12,9 +12,14 @@ focused PR._
 - [x] **v0.4.0 — safe actions** · `sync` (ff-only), `tidy` (dry-run by default), `branch`, `pr`.
 - [x] **v0.5.0 — polish + docs** · shellcheck CI gate, README written for adoption, `--json` on
   every inspect view.
+- [x] **v1.0.0 — release** · single self-contained script, curl-installable to `~/.local/bin/vegtam`,
+  tagged, DoD met.
 
-## Next
-- [ ] **v1.0.0 — release** · curl-installable to `~/.local/bin/vegtam`, tagged, public.
+## Beyond v1 (deferred — not the point of the tool)
+- Any remote-mutating or destructive action beyond the safe local set — and if ever added, it must
+  be ownership-gated and dry-run by default.
+- An optional, off-by-default "does this match my own conventions?" check for your own repos.
+- Shell completions and package distribution (a Homebrew tap or similar).
 
 ## Out of scope (by design)
 - Any remote-mutating or destructive action beyond the safe local set — and if ever added, it must
