@@ -6,6 +6,16 @@ All notable changes to vegtam are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+- **`LICENSE`** now carries the full MIT text (the scaffold shipped only the title + copyright line,
+  so GitHub reported the license as "Other" despite the README/CHANGELOG saying MIT).
+- **`.gitignore`** actually ignores `.env` files and keys now, matching what `CONTRIBUTING.md` promises.
+
+### Changed
+- Pre-public docs pass: `CLAUDE.md` rewritten from the (completed) build brief into a maintenance
+  manual for future agents; `CONTRIBUTING.md` expanded for outside contributors; `ROADMAP.md`'s two
+  overlapping "out of scope" sections consolidated; README install snippet creates `~/.local/bin` first.
+
 ## [1.0.0] - 2026-07-10
 
 First stable release. Vegtam is a single, self-contained Bash script that walks into any one repo —

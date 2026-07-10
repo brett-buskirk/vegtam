@@ -15,14 +15,15 @@ focused PR._
 - [x] **v1.0.0 — release** · single self-contained script, curl-installable to `~/.local/bin/vegtam`,
   tagged, DoD met.
 
-## Beyond v1 (deferred — not the point of the tool)
-- Any remote-mutating or destructive action beyond the safe local set — and if ever added, it must
-  be ownership-gated and dry-run by default.
-- An optional, off-by-default "does this match my own conventions?" check for your own repos.
-- Shell completions and package distribution (a Homebrew tap or similar).
-
 ## Out of scope (by design)
-- Any remote-mutating or destructive action beyond the safe local set — and if ever added, it must
-  be ownership-gated and dry-run by default.
-- Auditing a repo against external conventions.
-- Anything multi-repo — that's the pack's job; Vegtam is single-repo by definition.
+These aren't backlog — they're deliberately not what Vegtam is for.
+
+- **Anything remote-mutating or destructive** beyond the safe local set (`sync`, `tidy`, `branch`,
+  `pr`). If ever added, it must be ownership-gated and dry-run by default.
+- **Auditing a repo against conventions** — Vegtam reports what *is*. (An optional, off-by-default
+  "does this match *my own* conventions?" check for your own repos is the only version that could
+  ever fit, and it's not a priority.)
+- **Anything multi-repo** — that's the pack's job; Vegtam is single-repo by definition.
+
+## Maybe someday (nice-to-have, not planned)
+- Shell completions, and package distribution (a Homebrew tap or similar).
