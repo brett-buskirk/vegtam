@@ -7,8 +7,17 @@ All notable changes to vegtam are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
+- **`--json` on every inspect view** (`status`, `branches`, `prs`, `log`, `health`) — machine-readable
+  output for piping into other tools, built with `jq` so escaping is always correct. Fields that
+  can't be read (alerts you lack access to, a repo with no GitHub remote) come through as `null`, so
+  a consumer can tell "no access" from "none found". Needs `jq`; without it, `--json` refuses cleanly
+  and the human views are unaffected.
 - **Shellcheck CI gate** — `.github/workflows/shellcheck.yml` runs `bash -n` + `shellcheck` on every
   push and pull request, matching the pack's convention. README carries the status badge.
+
+### Changed
+- `status`, `prs`, and `health` factored their data-gathering so the human and `--json` renders share
+  one set of API calls (`status`/`prs`) or a single emitter (`health`).
 
 ## [0.4.0]
 

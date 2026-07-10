@@ -43,8 +43,8 @@ curl -fsSL https://raw.githubusercontent.com/brett-buskirk/vegtam/main/vegtam -o
 chmod +x ~/.local/bin/vegtam
 ```
 
-**Requires** `bash` and `git`. The GitHub CLI (`gh`) and `jq` unlock the GitHub-backed sections;
-without them, the local git views still work.
+**Requires** `bash` and `git`. The GitHub CLI (`gh`) unlocks the GitHub-backed sections and `jq`
+enables `--json` output; without them, the local git views still work.
 
 ## Usage
 
@@ -108,6 +108,18 @@ access-aware:
 It reports what *is* — it doesn't judge the repo against anyone's house style, and it changes
 nothing.
 
+### `--json`
+
+Every inspect view above takes `--json` (needs `jq`), emitting a structured object or array for
+piping into other tools. Fields you can't read come through as `null`, so a consumer can tell
+"no access" from "none found":
+
+```sh
+vegtam status --json | jq '.behind'                 # am I behind upstream?
+vegtam prs --json    | jq '[.[] | select(.mine)]'   # just my open PRs
+vegtam health --json | jq '.alerts.open // 0'       # open Dependabot alerts (null → 0)
+```
+
 ## Actions — safe, local, self-scoped
 
 The only commands that change anything. Each helps you work *in* this repo; none touch remote
@@ -141,9 +153,9 @@ a fork when you can't push to origin) and prompts for the rest. Extra flags pass
 
 ## Roadmap
 
-The views and safe actions ship today, and every push is `shellcheck`-gated in CI. Still ahead:
+The views (with `--json`) and safe actions ship today, and every push is `shellcheck`-gated in CI.
+Still ahead:
 
-- **`--json`** output where it helps, for piping into other tools
 - **v1.0.0** — public, `curl`-installable, tagged
 
 See [ROADMAP.md](ROADMAP.md). Anything remote-mutating or destructive beyond that safe local set is
