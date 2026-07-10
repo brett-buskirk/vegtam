@@ -7,9 +7,9 @@ All notable changes to vegtam are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
-- README hero image (`docs/vegtam-status.png`) — a representative `vegtam status` rendered as a clean
-  terminal-window PNG, matching the rest of the toolkit. Regenerate with `scripts/screenshot.py`
-  (dev-only; needs `rich` + `cairosvg`).
+- README screenshots — a `status` hero plus section shots for `prs`, `health`, and `tidy`
+  (`docs/vegtam-*.png`), rendered as clean terminal-window PNGs from one coherent `acme/webapp`
+  example. Regenerate all four with `scripts/screenshot.py` (dev-only; needs `rich` + `cairosvg`).
 
 ## [1.0.1] - 2026-07-10
 

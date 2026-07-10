@@ -85,6 +85,10 @@ anything (that's what [`tidy`](#tidy) is for). `--fetch` refreshes tracking and 
 Open pull requests, each with a CI glyph (`✓` pass · `✗` fail · `●` running · `·` none), its
 source branch, author, and age. The ones you authored are tagged `(you)`.
 
+<p align="center">
+  <img src="docs/vegtam-prs.png" alt="vegtam prs — open pull requests, each with a CI-status glyph, source branch, author and age; your own tagged (you)" width="720">
+</p>
+
 ### `log`
 
 A newest-first timeline of what changed: commits on the current branch (`●`), merged PRs (`⑃`),
@@ -104,6 +108,10 @@ access-aware:
 
 It reports what *is* — it doesn't judge the repo against anyone's house style, and it changes
 nothing.
+
+<p align="center">
+  <img src="docs/vegtam-health.png" alt="vegtam health — open Dependabot alerts by severity, dependency freshness, and third-party Actions not pinned to a commit SHA, with a signal count" width="720">
+</p>
 
 ### `--json`
 
@@ -135,6 +143,10 @@ Delete local branches already merged into the default branch. **Dry-run by defau
 it *would* delete and changes nothing until you add `--apply` (which confirms once for the batch;
 `--yes` skips the prompt). Never the default branch, never the one you're on, never anything on the
 remote, and only via `git branch -d` (which itself refuses a branch that isn't fully merged).
+
+<p align="center">
+  <img src="docs/vegtam-tidy.png" alt="vegtam tidy — a dry-run list of merged local branches it would delete, changing nothing until you add --apply" width="720">
+</p>
 
 ### `branch <name>`
 
