@@ -6,6 +6,11 @@ All notable changes to vegtam are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+- README hero image (`docs/vegtam-status.png`) — a representative `vegtam status` rendered as a clean
+  terminal-window PNG, matching the rest of the toolkit. Regenerate with `scripts/screenshot.py`
+  (dev-only; needs `rich` + `cairosvg`).
+
 ## [1.0.1] - 2026-07-10
 
 Everything merged since the `v1.0.0` tag: the `pr` bugfix plus the pre-public docs/legal pass.

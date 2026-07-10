@@ -9,15 +9,9 @@ Odin walks Midgard in disguise under the name *Vegtam*. This tool is that mode: 
 local `.git` and its GitHub remote. No config, no stored state, no assumptions about who owns the
 repo. Run it inside any repo, anywhere on the machine, and get a fast lay of the land.
 
-```
-  vegtam  ·  brett-buskirk/geri
-  The hunter of your GitHub estate — outdated deps, security advisories, and drift.
-
-    ● public   ·   default main
-    branch    main  ✓ clean  (up to date)
-    head      121b5b4  ✓ checks pass  · 5d ago
-    open      0 PRs   ·   0 issues
-```
+<p align="center">
+  <img src="docs/vegtam-status.png" alt="vegtam status — a one-screen briefing on the current repo: visibility, default branch, fork relationship, current branch with dirty state and stashes, the latest commit and its CI, and open PR/issue counts" width="760">
+</p>
 
 ## Works in any repo. Owns nothing.
 
