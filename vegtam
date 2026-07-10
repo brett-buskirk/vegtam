@@ -1,0 +1,254 @@
+#!/usr/bin/env bash
+# vegtam — the wanderer. A pocket CLI for whatever repo you're standing in.
+#
+# Odin walks Midgard in disguise under the name Vegtam; this tool is that mode.
+# It operates on exactly ONE repository — the one your shell is in right now —
+# derived live from the local .git and its GitHub remote. No config, no estate
+# model, no stored state. Drop it in ~/.local/bin and run it in any repo, on any
+# machine, and it just works.
+#
+#   vegtam [status]        one-screen briefing on the current repo
+#   vegtam help            the menu · vegtam <command> help  for per-command detail
+#
+# Deps: bash + git are required; gh + jq power the GitHub-backed sections and are
+# optional — every remote call degrades to a quiet note when they're missing, the
+# remote isn't GitHub, or you lack access. Vegtam owns nothing and mutates nothing
+# it isn't explicitly asked to; it is built to be safe in repositories you don't own.
+# shellcheck disable=SC2059  # color vars are fixed ANSI codes, deliberately embedded in format strings
+set -uo pipefail
+
+VERSION="0.1.0"
+
+# ── palette — color only on a TTY, and never when NO_COLOR is set ─────────────
+# Same convention as the rest of the pack: if stdout isn't a terminal (piped,
+# redirected) or NO_COLOR is present, the escapes collapse to empty strings and
+# the output is plain text.
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+  R=$'\e[31m'; G=$'\e[32m'; Y=$'\e[33m'; C=$'\e[36m'; M=$'\e[35m'; DIM=$'\e[2m'; BD=$'\e[1m'; X=$'\e[0m'
+else R=; G=; Y=; C=; M=; DIM=; BD=; X=; fi
+
+# ── small helpers ─────────────────────────────────────────────────────────────
+have(){ command -v "$1" >/dev/null 2>&1; }                    # is a tool on PATH?
+is_help(){ case "${1:-}" in help|-h|--help) return 0;; *) return 1;; esac; }
+note(){ printf "    ${DIM}%s${X}\n" "$1"; }                    # a dim aside when a section can't render
+
+# Compact a git relative date ("2 hours ago" -> "2h") so a whole status line fits
+# on one row. Mirrors huginn's status renderer.
+short(){ sed -E 's/ years?/y/;s/ months?/mo/;s/ weeks?/w/;s/ days?/d/;s/ hours?/h/;s/ minutes?/m/;s/ seconds?/s/;s/ ago//;s/ //g' <<<"${1:-}"; }
+
+# ── repo resolution — everything Vegtam knows comes from the current directory ─
+# Confirm we're inside a git work tree, find its root, and (best-effort) resolve a
+# github.com owner/name from the remotes. Populates the globals below; SLUG is left
+# empty for a non-GitHub or remote-less repo, in which case the git-only views
+# still work and the gh-backed ones degrade gracefully.
+RROOT=""      # absolute path to the work-tree root
+REPO_NAME=""  # its basename — the fallback display name when there's no slug
+SLUG=""       # GitHub "owner/name", or "" when there's no github.com remote
+resolve_repo(){
+  if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    printf "\n  ${R}not inside a git repository.${X} ${DIM}vegtam walks into a repo — cd into one and try again.${X}\n\n" >&2
+    return 1
+  fi
+  RROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
+  REPO_NAME="$(basename "$RROOT")"
+  # Prefer origin; otherwise take the first remote that parses as a github.com URL.
+  local url
+  url="$(git remote get-url origin 2>/dev/null || true)"
+  SLUG="$(github_slug "$url")"
+  if [ -z "$SLUG" ]; then
+    local r
+    for r in $(git remote 2>/dev/null); do
+      SLUG="$(github_slug "$(git remote get-url "$r" 2>/dev/null || true)")"
+      [ -n "$SLUG" ] && break
+    done
+  fi
+  return 0
+}
+
+# Parse "owner/name" out of a git remote URL, but only for github.com hosts.
+# Handles the ssh (git@github.com:owner/name.git), https, and ssh:// forms; the
+# host match requires a real boundary so lookalikes like "mygithub.com" don't slip
+# through. Prints nothing (and succeeds) for anything it can't confidently parse —
+# callers treat an empty slug as "no GitHub remote".
+github_slug(){
+  local u="${1:-}"
+  case "$u" in
+    *@github.com:*|*@github.com/*|*://github.com/*|github.com:*|github.com/*) ;;
+    *) return 0;;
+  esac
+  local path="${u##*github.com}"   # drop scheme, user, and host — keep the tail
+  path="${path#[:/]}"              # drop the leading ':' (ssh) or '/' (https)
+  path="${path%/}"                 # drop a trailing slash, then a trailing .git
+  path="${path%.git}"
+  local owner="${path%%/*}" rest="${path#*/}" name
+  name="${rest%%/*}"               # first two path segments are owner/name
+  # Require a real "owner/name": both non-empty, and the string actually had a '/'.
+  [ -n "$owner" ] && [ -n "$name" ] && [ "$path" != "$owner" ] && printf '%s/%s' "$owner" "$name"
+}
+
+# ── status — the flagship one-screen briefing ─────────────────────────────────
+cmd_status(){
+  is_help "${1:-}" && { help_status; return 0; }
+  local fetch=0 a
+  for a in "$@"; do case "$a" in
+    -f|--fetch) fetch=1;;
+    -*) printf "  ${Y}ignoring unknown option: %s${X}\n" "$a";;
+  esac; done
+  resolve_repo || return 1
+
+  # Optional fresh-ness pass: update remote-tracking refs so ahead/behind and the
+  # default branch reflect the real remote, at the cost of one network round-trip.
+  [ "$fetch" = 1 ] && { printf "  ${DIM}fetching…${X}\n"; git fetch -q --all 2>/dev/null || true; }
+
+  # ── local git facts (always available, no network) ──
+  local branch def sha chg stash last ab ahead behind
+  branch="$(git symbolic-ref --short HEAD 2>/dev/null || echo detached)"
+  def="$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##')"
+  sha="$(git rev-parse --short HEAD 2>/dev/null || echo '-')"
+  chg="$(git status --porcelain 2>/dev/null | grep -c . || true)"
+  stash="$(git stash list 2>/dev/null | grep -c . || true)"
+  last="$(short "$(git log -1 --format=%cr 2>/dev/null || true)")"
+  # ahead/behind vs the branch's upstream. left-right counts "behind<TAB>ahead";
+  # the whole thing fails (and we note "no upstream") when the branch tracks nothing.
+  if ab="$(git rev-list --left-right --count '@{upstream}...HEAD' 2>/dev/null)"; then
+    behind="${ab%%[[:space:]]*}"; ahead="${ab##*[[:space:]]}"
+  else behind=""; ahead=""; fi
+
+  # ── remote facts (best-effort; each degrades to a note on failure) ──
+  local vis="" desc="" isfork="" parent="" defremote="" meta=""
+  local have_remote=0
+  if [ -n "$SLUG" ] && have gh; then
+    # One call for the repo-level metadata. gh's built-in --jq needs no system jq,
+    # and `// ""` keeps missing fields (e.g. a null parent) from becoming "null".
+    # Fields are joined with the unit separator (\x1f), NOT a tab: `IFS=$'\t' read`
+    # collapses adjacent tabs (tab is IFS-whitespace), which would silently drop an
+    # empty field — e.g. a blank description — and shift every field left.
+    meta="$(gh repo view "$SLUG" \
+      --json visibility,description,isFork,parent,defaultBranchRef \
+      --jq '[(.visibility|ascii_downcase), (.description // ""), (.isFork|tostring), (.parent.nameWithOwner // ""), (.defaultBranchRef.name // "")] | join("\u001f")' 2>/dev/null || true)"
+    if [ -n "$meta" ]; then
+      have_remote=1
+      IFS=$'\x1f' read -r vis desc isfork parent defremote <<<"$meta"
+    fi
+  fi
+  # Fall back to the remote's default branch when git has no origin/HEAD locally.
+  [ -z "$def" ] && def="${defremote:-main}"
+
+  # ── header ──
+  printf "\n  ${BD}vegtam${X}  ${DIM}·${X}  ${BD}%s${X}\n" "${SLUG:-$REPO_NAME}"
+  [ -n "$desc" ] && printf "  ${DIM}%s${X}\n" "$desc"
+
+  # ── repo-level row: visibility · default branch · fork relationship ──
+  # The visibility dot only appears when we actually read the repo from GitHub;
+  # otherwise we lead with the default branch and let the note below say why.
+  if [ "$have_remote" = 1 ]; then
+    local visdot
+    case "$vis" in
+      public)   visdot="${G}● public${X}";;
+      private)  visdot="${Y}● private${X}";;
+      internal) visdot="${C}● internal${X}";;
+      *)        visdot="${DIM}● ${vis:-unknown}${X}";;
+    esac
+    printf "\n    %s   ${DIM}·${X}   default ${BD}%s${X}" "$visdot" "$def"
+    [ "$isfork" = "true" ] && [ -n "$parent" ] && printf "   ${DIM}·${X}   ${M}fork of %s${X}" "$parent"
+  else
+    printf "\n    default ${BD}%s${X}" "$def"
+  fi
+  printf "\n"
+
+  # ── working-tree row: current branch, dirty state, ahead/behind, stashes ──
+  local brc
+  if [ "$branch" = "$def" ]; then brc="${G}${branch}${X}"; else brc="${C}${BD}${branch}${X}"; fi
+  printf "    branch    %s" "$brc"
+  if [ "$chg" -eq 0 ]; then printf "  ${G}✓ clean${X}"; else printf "  ${Y}● %s changed${X}" "$chg"; fi
+  if [ -n "$ahead" ]; then
+    [ "$ahead"  -gt 0 ] && printf "  ${Y}↑%s${X}" "$ahead"
+    [ "$behind" -gt 0 ] && printf "  ${Y}↓%s${X}" "$behind"
+    [ "$ahead" -eq 0 ] && [ "$behind" -eq 0 ] && printf "  ${DIM}(up to date)${X}"
+  else printf "  ${DIM}(no upstream)${X}"; fi
+  [ "$stash" -gt 0 ] && printf "  ${M}⚑%s${X}" "$stash"
+  printf "\n"
+
+  # ── head row: latest commit, its CI rollup, and how long ago ──
+  printf "    head      ${BD}%s${X}" "$sha"
+  if [ "$have_remote" = 1 ] && [ "$sha" != "-" ]; then
+    case "$(ci_rollup "$(git rev-parse HEAD 2>/dev/null)")" in
+      pass)    printf "  ${G}✓ checks pass${X}";;
+      fail)    printf "  ${R}✗ checks failing${X}";;
+      pending) printf "  ${Y}● checks running${X}";;
+      *)       printf "  ${DIM}· no checks${X}";;
+    esac
+  fi
+  [ -n "$last" ] && printf "  ${DIM}· %s ago${X}" "$last"
+  printf "\n"
+
+  # ── activity row: open PR / issue counts (remote only) ──
+  if [ "$have_remote" = 1 ]; then
+    local nprs nissues
+    nprs="$(gh_count 'type:pr state:open')"
+    nissues="$(gh_count 'type:issue state:open')"
+    printf "    open      ${BD}%s${X} PRs   ${DIM}·${X}   ${BD}%s${X} issues\n" "${nprs:-?}" "${nissues:-?}"
+  fi
+
+  # ── degradation notes — say why a section is missing, don't just drop it ──
+  printf "\n"
+  if [ -z "$SLUG" ]; then
+    note "no github.com remote — showing local git only."
+  elif ! have gh; then
+    note "gh not installed — remote sections (visibility, checks, PRs/issues) are unavailable."
+  elif [ "$have_remote" = 0 ]; then
+    note "couldn't read $SLUG on GitHub — no access, or the network is down."
+  fi
+  printf "\n"
+}
+
+# Roll up a commit's CI into one word: pass | fail | pending | none. Combines the
+# check-runs API (GitHub Actions & most apps) with the older commit-status API
+# (some CI still posts there), so we don't miss a signal from either source.
+ci_rollup(){
+  local sha="${1:-}"; [ -z "$sha" ] && { echo none; return; }
+  local runs states all
+  runs="$(gh api "repos/$SLUG/commits/$sha/check-runs" --jq '.check_runs[] | (.conclusion // "pending")' 2>/dev/null || true)"
+  states="$(gh api "repos/$SLUG/commits/$sha/status"     --jq '.statuses[].state' 2>/dev/null || true)"
+  all="$(printf '%s\n%s\n' "$runs" "$states" | grep -v '^$' || true)"
+  [ -z "$all" ] && { echo none; return; }
+  grep -qiE 'failure|cancel|timed_out|action_required|^error$' <<<"$all" && { echo fail; return; }
+  grep -qiE 'pending|queued|in_progress|waiting|null'          <<<"$all" && { echo pending; return; }
+  echo pass
+}
+
+# Exact open count for the current repo via the search API — one call, and it
+# separates PRs from issues (which the repo's open_issues_count conflates).
+gh_count(){ gh api -X GET search/issues --jq '.total_count' -f q="repo:$SLUG $1" 2>/dev/null || true; }
+
+# ── per-command help ──────────────────────────────────────────────────────────
+help_status(){
+  printf "\n  ${BD}vegtam status${X} [--fetch]\n\n"
+  printf "  A one-screen briefing on the repo you're standing in — the flagship view.\n"
+  printf "  Fast and local by default; the GitHub-backed lines degrade to a note when gh\n"
+  printf "  is missing, the remote isn't GitHub, or you don't have access.\n\n"
+  printf "  ${BD}Shows${X}\n"
+  printf "    name + description + visibility, and the default branch\n"
+  printf "    your relationship to it ${DIM}(fork of whom; ahead/behind its upstream)${X}\n"
+  printf "    current branch + dirty state + stashes\n"
+  printf "    latest commit, its CI status, and how long ago\n"
+  printf "    open PR and issue counts\n\n"
+  printf "  ${BD}Options${X}\n"
+  printf "    -f, --fetch   git fetch first for fresh ahead/behind ${DIM}(network)${X}\n\n"
+}
+
+# ── help ──────────────────────────────────────────────────────────────────────
+cmd_help(){
+  printf "\n  ${BD}vegtam${X} ${DIM}— the wanderer · one repo, wherever you're standing · v%s${X}\n\n" "$VERSION"
+  printf "  ${DIM}inspect${X}\n"
+  printf "    ${BD}status${X}                one-screen briefing on the current repo ${DIM}(default)${X}\n"
+  printf "    ${BD}help${X}                  this menu\n\n"
+  printf "  ${DIM}run${X} ${BD}vegtam <command> help${X} ${DIM}for details & options on any command.${X}\n\n"
+}
+
+case "${1:-status}" in
+  status)              shift 2>/dev/null || true; cmd_status "$@";;
+  help|-h|--help)      cmd_help;;
+  -V|--version|version) printf "vegtam %s\n" "$VERSION";;
+  *) printf "\n  ${R}unknown command: %s${X}\n" "$1"; cmd_help; exit 1;;
+esac
