@@ -51,6 +51,7 @@ vegtam [status]      one-screen briefing on the current repo (the default)
 vegtam branches      local + remote branches: tracking, merged, stale
 vegtam prs           open pull requests with their CI status
 vegtam log           timeline of commits, merged PRs, and releases
+vegtam health        security & freshness: alerts, deps, unpinned actions
 vegtam help          the menu
 vegtam <cmd> help    detail & options for any command
 vegtam --version     print the version
@@ -87,12 +88,24 @@ A newest-first timeline of what changed: commits on the current branch (`●`), 
 and releases (`⚑`). `--since <window>` sets how far back to look — `6h`, `3d`, `2w` (default),
 `1mo`. Commits always work; the GitHub events need `gh`.
 
+### `health`
+
+Security & freshness — three neutral, widely-recommended signals, each best-effort and
+access-aware:
+
+- **alerts** — open Dependabot advisories by severity (needs security read; a contributor usually
+  can't see these, so it degrades to a note)
+- **deps** — dependency manifests with nothing watching them, and open Dependabot update PRs
+- **actions** — third-party Actions not pinned to a commit SHA (the supply-chain hardening
+  recommendation), flagged outdated when a newer major exists
+
+It reports what *is* — it doesn't judge the repo against anyone's house style, and it changes
+nothing.
+
 ## Roadmap
 
 The views ship today. The rest arrives one safe, reviewable piece at a time:
 
-- **security & freshness** — `health`: Dependabot alerts, outdated dependencies, unpinned actions,
-  degrading gracefully where access is denied
 - **safe local actions** — `sync` (fast-forward only), `tidy` (prune merged local branches,
   dry-run by default), `branch`, `pr`
 

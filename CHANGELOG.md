@@ -7,6 +7,15 @@ All notable changes to vegtam are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
+- **`vegtam health`** (alias `hunt`) — a security & freshness view: open Dependabot alerts by
+  severity, dependency freshness (unwatched manifests + open Dependabot update PRs), and
+  third-party GitHub Actions not pinned to a commit SHA (flagged outdated when a newer major
+  exists). Best-effort and access-aware — every remote piece degrades to a note; the local scans
+  always run. Convention-neutral: it reports, it doesn't audit or change anything.
+
+## [0.2.0]
+
+### Added
 - **`vegtam branches`** — local branches (newest first) with upstream tracking, merged-into-default
   status, and age, plus the branches on `origin` you don't have locally. Read-only. `--fetch`
   refreshes tracking + remote branches.

@@ -17,7 +17,7 @@
 # shellcheck disable=SC2059  # color vars are fixed ANSI codes, deliberately embedded in format strings
 set -uo pipefail
 
-VERSION="0.2.0"
+VERSION="0.3.0"
 
 # ── palette — color only on a TTY, and never when NO_COLOR is set ─────────────
 # Same convention as the rest of the pack: if stdout isn't a terminal (piped,
@@ -87,6 +87,22 @@ classify_ci(){
   grep -qiE 'pending|queued|in_progress|waiting|expected|stale|null' <<<"$all" && { echo pending; return; }
   echo pass
 }
+
+# ── health helpers (used by the security & freshness view) ────────────────────
+plural(){ [ "${1:-0}" = 1 ] && printf '' || printf 's'; }
+sev_color(){ case "$1" in critical) printf '%s' "$BD$R";; high) printf '%s' "$R";; medium) printf '%s' "$Y";; *) printf '%s' "$DIM";; esac; }
+# A dependency manifest filename -> its ecosystem label (npm, pip, …).
+manifest_ecosystem(){ case "$1" in
+  package.json) echo npm;; requirements.txt|Pipfile|pyproject.toml) echo pip;; Gemfile) echo bundler;;
+  go.mod) echo gomod;; Cargo.toml) echo cargo;; composer.json) echo composer;; pom.xml) echo maven;;
+  build.gradle|build.gradle.kts) echo gradle;; *.csproj) echo nuget;;
+esac; }
+# Leading major version from a tag ("v4.1.0"/"4.1.0" -> "4"); empty if not version-shaped.
+majnum(){ local v="${1:-}"; v="${v#v}"; v="${v#V}"; [[ "$v" =~ ^([0-9]+) ]] && printf '%s' "${BASH_REMATCH[1]}"; }
+# The manifest filenames health looks for, and the dirs it won't descend into.
+MANIFEST_FIND_EXPR=( -type f \( -name package.json -o -name requirements.txt -o -name Pipfile \
+  -o -name pyproject.toml -o -name Gemfile -o -name go.mod -o -name Cargo.toml -o -name composer.json \
+  -o -name pom.xml -o -name build.gradle -o -name build.gradle.kts -o -name '*.csproj' \) )
 
 # ── repo resolution — everything Vegtam knows comes from the current directory ─
 # Confirm we're inside a git work tree, find its root, and (best-effort) resolve a
@@ -456,6 +472,139 @@ cmd_log(){
   printf "\n  ${BD}%d events${X} ${DIM}since %s${X}\n\n" "$total" "$since"
 }
 
+# ── health — security & freshness, best-effort and access-aware ───────────────
+# Three neutral, widely-recommended signals: open Dependabot alerts, dependency
+# freshness, and unpinned third-party actions. Every remote piece degrades to a
+# note when gh is absent, the remote isn't GitHub, or you lack the access it needs
+# (alerts in particular require security read, which a contributor usually lacks).
+cmd_health(){
+  is_help "${1:-}" && { help_health; return 0; }
+  resolve_repo || return 1
+  local owner=""; [ -n "$SLUG" ] && owner="${SLUG%%/*}"
+  local signals=0
+
+  printf "\n  ${BD}vegtam health${X}  ${DIM}·  %s  ·  security & freshness${X}\n\n" "${SLUG:-$REPO_NAME}"
+
+  # ── 1. Dependabot alerts ──
+  # gh api exits non-zero on an HTTP error (no access / not enabled), which we use
+  # to tell "can't see alerts" apart from "saw them, there are none". No jq needed.
+  printf "  ${BD}alerts${X}  ${DIM}open Dependabot security advisories${X}\n"
+  if   [ -z "$SLUG" ]; then note "no github.com remote — alerts unavailable."
+  elif ! have gh;      then note "gh not installed — alerts unavailable."
+  else
+    local alerts ok=1
+    alerts="$(gh api "repos/$SLUG/dependabot/alerts?state=open&per_page=100" \
+      --jq 'def rank: {"critical":0,"high":1,"medium":2,"low":3}[.] // 4;
+            [.[] | {r:(.security_advisory.severity|rank), sev:.security_advisory.severity, num:.number,
+                    pkg:.dependency.package.name, sum:.security_advisory.summary}]
+            | sort_by(.r) | .[] | [.sev,(.num|tostring),.pkg,.sum] | join("\u001f")' 2>/dev/null)" || ok=0
+    if [ "$ok" = 0 ]; then
+      note "not available — needs security access, or Dependabot alerts aren't enabled here."
+    elif [ -z "$alerts" ]; then
+      printf "    ${G}✓ no open alerts${X}\n"
+    else
+      local n; n="$(grep -c . <<<"$alerts")"; signals=$((signals+n))
+      local sevs; sevs="$(cut -d $'\x1f' -f1 <<<"$alerts")"
+      local c_crit c_high c_med c_low
+      c_crit="$(grep -c '^critical$' <<<"$sevs" || true)"; c_high="$(grep -c '^high$' <<<"$sevs" || true)"
+      c_med="$(grep -c '^medium$' <<<"$sevs" || true)";   c_low="$(grep -c '^low$' <<<"$sevs" || true)"
+      printf "    ${BD}%d open${X}" "$n"
+      [ "$c_crit" -gt 0 ] && printf "  ${BD}${R}%d critical${X}" "$c_crit"
+      [ "$c_high" -gt 0 ] && printf "  ${R}%d high${X}"          "$c_high"
+      [ "$c_med"  -gt 0 ] && printf "  ${Y}%d medium${X}"        "$c_med"
+      [ "$c_low"  -gt 0 ] && printf "  ${DIM}%d low${X}"         "$c_low"
+      printf "\n"
+      local sev num pkg sum shown=0
+      while IFS=$'\x1f' read -r sev num pkg sum; do
+        [ -z "$sev" ] && continue; [ "$shown" -ge 8 ] && break
+        printf "    %s%-8s${X} ${DIM}#%s${X} %-16s %s\n" "$(sev_color "$sev")" "$sev" "$num" "$pkg" "$sum"
+        shown=$((shown+1))
+      done <<<"$alerts"
+      [ "$n" -gt 8 ] && note "… and $((n-8)) more."
+    fi
+  fi
+
+  # ── 2. dependency freshness ──
+  printf "\n  ${BD}deps${X}  ${DIM}dependency freshness${X}\n"
+  local have_dependabot=0
+  { [ -f "$RROOT/.github/dependabot.yml" ] || [ -f "$RROOT/.github/dependabot.yaml" ]; } && have_dependabot=1
+  # Manifests near the root — pruning the usual vendored/build dirs so we don't
+  # descend into a checked-in node_modules and report the world.
+  local manifests ecos=""
+  manifests="$(find "$RROOT" -maxdepth 2 \
+    \( -type d \( -name node_modules -o -name vendor -o -name dist -o -name build -o -name .git \) -prune \) \
+    -o "${MANIFEST_FIND_EXPR[@]}" -print 2>/dev/null || true)"
+  [ -n "$manifests" ] && ecos="$(xargs -n1 basename <<<"$manifests" | while read -r f; do manifest_ecosystem "$f"; done | sort -u | paste -sd, -)"
+  # Open Dependabot version-update PRs (network, if readable).
+  local dpr="" dpr_ok=1
+  if [ -n "$SLUG" ] && have gh; then
+    dpr="$(gh pr list -R "$SLUG" --state open --author "app/dependabot" --limit 50 \
+      --json number,title,createdAt --jq '.[] | [(.number|tostring), .title, .createdAt] | join("\u001f")' 2>/dev/null)" || dpr_ok=0
+  else dpr_ok=0; fi
+  local printed_dep=0
+  if [ -n "$ecos" ] && [ "$have_dependabot" = 0 ]; then
+    printf "    ${Y}∙${X} manifests present, nothing watching them for updates ${DIM}(%s)${X}\n" "$ecos"
+    signals=$((signals+1)); printed_dep=1
+  fi
+  if [ -n "$dpr" ]; then
+    local num title created
+    while IFS=$'\x1f' read -r num title created; do
+      [ -z "$num" ] && continue
+      printf "    ${C}⑃${X} ${BD}#%s${X} %s  ${DIM}· %s ago${X}\n" "$num" "$title" "$(age_short "$(date -d "$created" +%s 2>/dev/null || date +%s)")"
+      signals=$((signals+1)); printed_dep=1
+    done <<<"$dpr"
+  fi
+  if [ "$printed_dep" = 0 ]; then
+    if   [ "$have_dependabot" = 1 ]; then printf "    ${G}✓ Dependabot configured, no update PRs open${X}\n"
+    elif [ -z "$manifests" ];        then printf "    ${DIM}· no dependency manifests found near the root${X}\n"
+    else                                  printf "    ${G}✓ nothing pending${X}\n"; fi
+    [ "$dpr_ok" = 0 ] && note "update PRs not checked (no gh or no GitHub remote) — local manifest scan only."
+  fi
+
+  # ── 3. unpinned third-party actions ──
+  printf "\n  ${BD}actions${X}  ${DIM}third-party Actions not pinned to a commit SHA${X}\n"
+  local -a UNPINNED=(); local wf line
+  while read -r wf; do
+    [ -z "$wf" ] && continue
+    local wfname; wfname="$(basename "$wf")"
+    while IFS= read -r line; do
+      [[ "$line" =~ ^[[:space:]]*-?[[:space:]]*uses:[[:space:]]*([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)@([A-Za-z0-9_./-]+) ]] || continue
+      local action="${BASH_REMATCH[1]}" ref="${BASH_REMATCH[2]}"
+      [ -n "$owner" ] && [[ "$action" == "$owner/"* ]] && continue   # skip the repo's own (first-party) actions
+      [[ "$ref" =~ ^[0-9a-f]{40}$ ]] && continue                     # already SHA-pinned
+      UNPINNED+=("$action"$'\x1f'"$ref"$'\x1f'"$wfname")
+    done < "$wf"
+  done < <(find "$RROOT/.github/workflows" -maxdepth 1 -type f \( -name '*.yml' -o -name '*.yaml' \) 2>/dev/null)
+
+  if   [ ! -d "$RROOT/.github/workflows" ]; then printf "    ${DIM}· no GitHub Actions workflows${X}\n"
+  elif [ "${#UNPINNED[@]}" -eq 0 ];        then printf "    ${G}✓ all third-party actions are SHA-pinned${X}\n"
+  else
+    # One release lookup per unique action (network) to say outdated vs current.
+    declare -A LATEST=(); local act
+    if have gh; then
+      while read -r act; do [ -z "$act" ] && continue
+        LATEST[$act]="$(gh api "repos/$act/releases/latest" --jq '.tag_name' 2>/dev/null || true)"
+      done < <(printf '%s\n' "${UNPINNED[@]}" | cut -d $'\x1f' -f1 | sort -u)
+    fi
+    local u action ref wfn
+    for u in "${UNPINNED[@]}"; do
+      IFS=$'\x1f' read -r action ref wfn <<<"$u"
+      local latest="${LATEST[$action]:-}" info=""
+      if [ -n "$latest" ]; then
+        local rmaj lmaj; rmaj="$(majnum "$ref")"; lmaj="$(majnum "$latest")"
+        if [ -n "$rmaj" ] && [ -n "$lmaj" ] && [ "$lmaj" -gt "$rmaj" ]; then info="${Y}outdated → ${latest}${X}"
+        else info="${DIM}latest ${latest}${X}"; fi
+      fi
+      printf "    ${Y}∙${X} %-38s ${DIM}%-22s${X} %s\n" "$action@$ref" "$wfn" "$info"
+    done
+    signals=$((signals + ${#UNPINNED[@]}))
+  fi
+
+  # ── footer ──
+  if [ "$signals" -eq 0 ]; then printf "\n  ${G}✓ clean — nothing flagged${X}\n\n"
+  else printf "\n  ${BD}%d signal%s${X} ${DIM}to look at across alerts · deps · actions${X}\n\n" "$signals" "$(plural "$signals")"; fi
+}
+
 # ── per-command help ──────────────────────────────────────────────────────────
 help_status(){
   printf "\n  ${BD}vegtam status${X} [--fetch]\n\n"
@@ -495,6 +644,18 @@ help_log(){
   printf "  ${BD}Options${X}\n"
   printf "    --since <window>   how far back to look — ${BD}6h${X} · ${BD}3d${X} · ${BD}2w${X} ${DIM}(default)${X} · ${BD}1mo${X}\n\n"
 }
+help_health(){
+  printf "\n  ${BD}vegtam health${X}\n\n"
+  printf "  Security & freshness for the current repo — three neutral, widely-recommended\n"
+  printf "  signals, each best-effort and access-aware:\n\n"
+  printf "    ${BD}alerts${X}    open Dependabot advisories, by severity ${DIM}(needs security read —\n"
+  printf "              a contributor usually can't see these; degrades to a note)${X}\n"
+  printf "    ${BD}deps${X}      manifests with nothing watching them, and open Dependabot update PRs\n"
+  printf "    ${BD}actions${X}   third-party Actions not pinned to a commit SHA ${DIM}(the supply-chain\n"
+  printf "              hardening recommendation), flagged outdated when a newer major exists${X}\n\n"
+  printf "  ${DIM}Reports what is; it doesn't judge the repo against anyone's house style, and it\n"
+  printf "  changes nothing. Network for the GitHub pieces; the local scans always run.${X}\n\n"
+}
 
 # ── help ──────────────────────────────────────────────────────────────────────
 cmd_help(){
@@ -504,6 +665,7 @@ cmd_help(){
   printf "    ${BD}branches${X}              local + remote branches: tracking, merged, stale\n"
   printf "    ${BD}prs${X}                   open pull requests with their CI status\n"
   printf "    ${BD}log${X} [--since w]       timeline of commits, merged PRs, and releases\n"
+  printf "    ${BD}health${X}                security & freshness: alerts, deps, unpinned actions\n"
   printf "    ${BD}help${X}                  this menu\n\n"
   printf "  ${DIM}run${X} ${BD}vegtam <command> help${X} ${DIM}for details & options on any command.${X}\n\n"
 }
@@ -513,6 +675,7 @@ case "${1:-status}" in
   branches|br)         shift; cmd_branches "$@";;
   prs|pulls)           shift; cmd_prs "$@";;
   log|activity)        shift; cmd_log "$@";;
+  health|hunt)         shift; cmd_health "$@";;
   help|-h|--help)      cmd_help;;
   -V|--version|version) printf "vegtam %s\n" "$VERSION";;
   *) printf "\n  ${R}unknown command: %s${X}\n" "$1"; cmd_help; exit 1;;
