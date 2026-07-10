@@ -17,7 +17,7 @@
 # shellcheck disable=SC2059  # color vars are fixed ANSI codes, deliberately embedded in format strings
 set -uo pipefail
 
-VERSION="0.4.0"
+VERSION="0.5.0"
 
 # ── palette — color only on a TTY, and never when NO_COLOR is set ─────────────
 # Same convention as the rest of the pack: if stdout isn't a terminal (piped,
@@ -31,6 +31,13 @@ else R=; G=; Y=; C=; M=; DIM=; BD=; X=; fi
 have(){ command -v "$1" >/dev/null 2>&1; }                    # is a tool on PATH?
 is_help(){ case "${1:-}" in help|-h|--help) return 0;; *) return 1;; esac; }
 note(){ printf "    ${DIM}%s${X}\n" "$1"; }                    # a dim aside when a section can't render
+
+# The inspect views can emit machine-readable output with --json. jq builds it (so
+# escaping is always correct); without jq we refuse cleanly rather than hand-roll
+# JSON. num() normalizes a value to a bare JSON number, or "null" when it's not one —
+# handy for feeding --argjson from fields that may be empty (no upstream, no access).
+json_ok(){ have jq && return 0; printf "  ${R}--json needs jq${X} ${DIM}(install jq, or drop --json for the human view).${X}\n" >&2; return 1; }
+num(){ [[ "${1:-}" =~ ^-?[0-9]+$ ]] && printf '%s' "$1" || printf 'null'; }
 
 # Compact a git relative date ("2 hours ago" -> "2h") so a whole status line fits
 # on one row. Mirrors huginn's status renderer.
@@ -157,16 +164,19 @@ github_slug(){
 # ── status — the flagship one-screen briefing ─────────────────────────────────
 cmd_status(){
   is_help "${1:-}" && { help_status; return 0; }
-  local fetch=0 a
+  local fetch=0 json=0 a
   for a in "$@"; do case "$a" in
     -f|--fetch) fetch=1;;
+    --json) json=1;;
     -*) printf "  ${Y}ignoring unknown option: %s${X}\n" "$a";;
   esac; done
+  [ "$json" = 1 ] && { json_ok || return 1; }
   resolve_repo || return 1
 
   # Optional fresh-ness pass: update remote-tracking refs so ahead/behind and the
   # default branch reflect the real remote, at the cost of one network round-trip.
-  [ "$fetch" = 1 ] && { printf "  ${DIM}fetching…${X}\n"; git fetch -q --all 2>/dev/null || true; }
+  # In --json mode the progress line would corrupt the output, so it goes to stderr.
+  [ "$fetch" = 1 ] && { [ "$json" = 0 ] && printf "  ${DIM}fetching…${X}\n" || printf "fetching…\n" >&2; git fetch -q --all 2>/dev/null || true; }
 
   # ── local git facts (always available, no network) ──
   local branch def sha chg stash last ab ahead behind
@@ -201,6 +211,48 @@ cmd_status(){
   fi
   # Fall back to the remote's default branch when git has no origin/HEAD locally.
   [ -z "$def" ] && def="${defremote:-main}"
+
+  # ── remote-only facts: CI rollup for HEAD, and open PR/issue counts ──
+  # Computed once here so the JSON and human renders share them (one set of API calls).
+  local ci="" nprs="" nissues=""
+  if [ "$have_remote" = 1 ]; then
+    [ "$sha" != "-" ] && ci="$(ci_rollup "$(git rev-parse HEAD 2>/dev/null)")"
+    nprs="$(gh_count 'type:pr state:open')"
+    nissues="$(gh_count 'type:issue state:open')"
+  fi
+
+  # ── JSON output — one object, built with jq so escaping is always correct ──
+  if [ "$json" = 1 ]; then
+    local hasup=false; [ -n "$ahead" ] && hasup=true
+    jq -n \
+      --arg slug "$SLUG" --arg name "$REPO_NAME" --arg root "$RROOT" \
+      --arg desc "$desc" --arg vis "$vis" --arg defbranch "$def" --arg branch "$branch" \
+      --arg parent "$parent" --arg sha "$sha" --arg ci "$ci" --arg last "$last" \
+      --argjson isFork "${isfork:-false}" \
+      --argjson dirty "$(num "$chg")" --argjson stashes "$(num "$stash")" \
+      --argjson hasUpstream "$hasup" \
+      --argjson ahead "$(num "$ahead")" --argjson behind "$(num "$behind")" \
+      --argjson remoteAvailable "$([ "$have_remote" = 1 ] && echo true || echo false)" \
+      --argjson openPRs "$(num "$nprs")" --argjson openIssues "$(num "$nissues")" \
+      '{
+         repo: (if $slug=="" then null else $slug end),
+         name: $name, root: $root,
+         description: (if $desc=="" then null else $desc end),
+         visibility: (if $vis=="" then null else $vis end),
+         defaultBranch: $defbranch, branch: $branch, isFork: $isFork,
+         parent: (if $parent=="" then null else $parent end),
+         dirty: $dirty, stashes: $stashes,
+         hasUpstream: $hasUpstream, ahead: $ahead, behind: $behind,
+         head: {
+           sha: (if $sha=="-" then null else $sha end),
+           ci: (if $ci=="" then null else $ci end),
+           lastCommitRelative: (if $last=="" then null else $last end)
+         },
+         openPRs: $openPRs, openIssues: $openIssues,
+         remoteAvailable: $remoteAvailable
+       }'
+    return 0
+  fi
 
   # ── header ──
   printf "\n  ${BD}vegtam${X}  ${DIM}·${X}  ${BD}%s${X}\n" "${SLUG:-$REPO_NAME}"
@@ -240,7 +292,7 @@ cmd_status(){
   # ── head row: latest commit, its CI rollup, and how long ago ──
   printf "    head      ${BD}%s${X}" "$sha"
   if [ "$have_remote" = 1 ] && [ "$sha" != "-" ]; then
-    case "$(ci_rollup "$(git rev-parse HEAD 2>/dev/null)")" in
+    case "$ci" in
       pass)    printf "  ${G}✓ checks pass${X}";;
       fail)    printf "  ${R}✗ checks failing${X}";;
       pending) printf "  ${Y}● checks running${X}";;
@@ -252,9 +304,6 @@ cmd_status(){
 
   # ── activity row: open PR / issue counts (remote only) ──
   if [ "$have_remote" = 1 ]; then
-    local nprs nissues
-    nprs="$(gh_count 'type:pr state:open')"
-    nissues="$(gh_count 'type:issue state:open')"
     printf "    open      ${BD}%s${X} PRs   ${DIM}·${X}   ${BD}%s${X} issues\n" "${nprs:-?}" "${nissues:-?}"
   fi
 
@@ -288,18 +337,47 @@ gh_count(){ gh api -X GET search/issues --jq '.total_count' -f q="repo:$SLUG $1"
 # ── branches — local + remote branches, purely descriptive (no pruning here) ──
 cmd_branches(){
   is_help "${1:-}" && { help_branches; return 0; }
-  local fetch=0 a
+  local fetch=0 json=0 a
   for a in "$@"; do case "$a" in
     -f|--fetch) fetch=1;;
+    --json) json=1;;
     -*) printf "  ${Y}ignoring unknown option: %s${X}\n" "$a";;
   esac; done
+  [ "$json" = 1 ] && { json_ok || return 1; }
   resolve_repo || return 1
-  [ "$fetch" = 1 ] && { printf "  ${DIM}fetching…${X}\n"; git fetch -q --prune --all 2>/dev/null || true; }
+  [ "$fetch" = 1 ] && { [ "$json" = 0 ] && printf "  ${DIM}fetching…${X}\n" || printf "fetching…\n" >&2; git fetch -q --prune --all 2>/dev/null || true; }
 
   local def cur defref; def="$(default_branch)"; defref="$(default_ref "$def")"
   cur="$(git symbolic-ref --short HEAD 2>/dev/null || echo detached)"
   # Local branches already merged into the default — one membership set, tested per branch.
   local mergedset; mergedset="$(git for-each-ref --format='%(refname:short)' --merged "$defref" refs/heads 2>/dev/null || true)"
+
+  # ── JSON: local branches + the origin-only ones, as two arrays in one object ──
+  if [ "$json" = 1 ]; then
+    local -a locals=() remotes=(); local b up track ts merged rb rts
+    while IFS=$'\x1f' read -r b up track ts; do
+      [ -z "$b" ] && continue
+      merged=false; { grep -qx "$b" <<<"$mergedset" && [ "$b" != "$def" ]; } && merged=true
+      locals+=("$(jq -n --arg name "$b" --arg up "$up" --arg track "$track" --argjson committed "$(num "$ts")" \
+        --argjson merged "$merged" \
+        --argjson current "$([ "$b" = "$cur" ] && echo true || echo false)" \
+        --argjson isDefault "$([ "$b" = "$def" ] && echo true || echo false)" \
+        '{name:$name, upstream:(if $up=="" then null else $up end), track:(if $track=="" then null else $track end), committed:$committed, merged:$merged, current:$current, default:$isDefault}')")
+    done < <(git for-each-ref --sort=-committerdate \
+               --format=$'%(refname:short)\x1f%(upstream:short)\x1f%(upstream:track)\x1f%(committerdate:unix)' refs/heads 2>/dev/null)
+    while IFS=$'\x1f' read -r rb rts; do
+      rb="${rb#origin/}"; [ -z "$rb" ] && continue; [ "$rb" = "HEAD" ] && continue
+      git show-ref --verify -q "refs/heads/$rb" && continue
+      remotes+=("$(jq -n --arg name "$rb" --argjson committed "$(num "$rts")" '{name:$name, committed:$committed}')")
+    done < <(git for-each-ref --sort=-committerdate \
+               --format=$'%(refname:short)\x1f%(committerdate:unix)' refs/remotes/origin 2>/dev/null)
+    local ljson="[]" rjson="[]"
+    [ "${#locals[@]}"  -gt 0 ] && ljson="$(printf '%s\n' "${locals[@]}"  | jq -s '.')"
+    [ "${#remotes[@]}" -gt 0 ] && rjson="$(printf '%s\n' "${remotes[@]}" | jq -s '.')"
+    jq -n --arg defbranch "$def" --argjson local "$ljson" --argjson remoteOnly "$rjson" \
+      '{defaultBranch:$defbranch, local:$local, remoteOnly:$remoteOnly}'
+    return 0
+  fi
 
   printf "\n  ${BD}vegtam branches${X}  ${DIM}·  %s  ·  default %s${X}\n\n" "${SLUG:-$REPO_NAME}" "$def"
 
@@ -358,10 +436,26 @@ cmd_branches(){
 # ── prs — open pull requests with their check status; highlight your own ──────
 cmd_prs(){
   is_help "${1:-}" && { help_prs; return 0; }
+  local json=0 a
+  for a in "$@"; do case "$a" in
+    --json) json=1;;
+    -*) printf "  ${Y}ignoring unknown option: %s${X}\n" "$a";;
+  esac; done
+  [ "$json" = 1 ] && { json_ok || return 1; }
   resolve_repo || return 1
-  printf "\n  ${BD}vegtam prs${X}  ${DIM}·  %s  ·  open pull requests${X}\n\n" "${SLUG:-$REPO_NAME}"
-  if [ -z "$SLUG" ]; then note "no github.com remote — prs needs a GitHub repo."; printf "\n"; return 0; fi
-  if ! have gh;      then note "gh not installed — prs needs the GitHub CLI."; printf "\n"; return 0; fi
+  # In --json mode a hard guard emits an empty array (reason to stderr) so a consumer
+  # always gets valid JSON; the human view prints an inline note instead.
+  if [ -z "$SLUG" ]; then
+    [ "$json" = 1 ] && { printf '[]\n'; printf "no github.com remote — prs needs a GitHub repo.\n" >&2; return 0; }
+    printf "\n  ${BD}vegtam prs${X}  ${DIM}·  %s  ·  open pull requests${X}\n\n" "$REPO_NAME"
+    note "no github.com remote — prs needs a GitHub repo."; printf "\n"; return 0
+  fi
+  if ! have gh; then
+    [ "$json" = 1 ] && { printf '[]\n'; printf "gh not installed — prs needs the GitHub CLI.\n" >&2; return 0; }
+    printf "\n  ${BD}vegtam prs${X}  ${DIM}·  %s  ·  open pull requests${X}\n\n" "$SLUG"
+    note "gh not installed — prs needs the GitHub CLI."; printf "\n"; return 0
+  fi
+  [ "$json" = 0 ] && printf "\n  ${BD}vegtam prs${X}  ${DIM}·  %s  ·  open pull requests${X}\n\n" "$SLUG"
 
   # One list call. statusCheckRollup rides along so we show each PR's CI without a
   # per-PR round-trip; its elements are check-runs (conclusion/status) or legacy
@@ -371,6 +465,23 @@ cmd_prs(){
     --json number,title,author,headRefName,isDraft,createdAt,statusCheckRollup \
     --jq '.[] | [ (.number|tostring), .title, (.author.login // "?"), .headRefName, (.isDraft|tostring), .createdAt, ([.statusCheckRollup[]? | (.conclusion // .state // .status // "")] | join(",")) ] | join("\u001f")' 2>/dev/null || true)"
 
+  local mylogin; mylogin="$(gh_login)"
+
+  # ── JSON: one object per PR, carrying the same computed CI verdict the view shows ──
+  if [ "$json" = 1 ]; then
+    local -a objs=(); local num title author branch draft created ciraw
+    while IFS=$'\x1f' read -r num title author branch draft created ciraw; do
+      [ -z "$num" ] && continue
+      local ismine=false; [ -n "$mylogin" ] && [ "$author" = "$mylogin" ] && ismine=true
+      objs+=("$(jq -n --argjson number "$(num "$num")" --arg title "$title" --arg author "$author" \
+        --arg branch "$branch" --argjson draft "${draft:-false}" --arg created "$created" \
+        --arg checks "$(classify_ci "$ciraw")" --argjson mine "$ismine" \
+        '{number:$number, title:$title, author:$author, branch:$branch, draft:$draft, createdAt:$created, checks:$checks, mine:$mine}')")
+    done <<< "$rows"
+    if [ "${#objs[@]}" -eq 0 ]; then printf '[]\n'; else printf '%s\n' "${objs[@]}" | jq -s '.'; fi
+    return 0
+  fi
+
   if [ -z "$rows" ]; then
     # Tell "genuinely no open PRs" apart from "couldn't read the repo".
     if gh repo view "$SLUG" >/dev/null 2>&1; then printf "  ${G}✓ no open pull requests${X}\n\n"
@@ -378,7 +489,6 @@ cmd_prs(){
     return 0
   fi
 
-  local mylogin; mylogin="$(gh_login)"
   local n=0 mine=0 num title author branch draft created ciraw
   while IFS=$'\x1f' read -r num title author branch draft created ciraw; do
     [ -z "$num" ] && continue
@@ -401,11 +511,13 @@ cmd_prs(){
 # ── log — a timeline of what changed: commits, merged PRs, releases ───────────
 cmd_log(){
   is_help "${1:-}" && { help_log; return 0; }
-  local since="2w"
+  local since="2w" json=0
   while [ $# -gt 0 ]; do case "$1" in
     --since) shift; since="${1:-2w}";;
+    --json) json=1;;
     -*) printf "  ${Y}ignoring unknown option: %s${X}\n" "$1";;
   esac; shift; done
+  [ "$json" = 1 ] && { json_ok || return 1; }
   resolve_repo || return 1
 
   local sincegit; sincegit="$(since_to_gitdate "$since")" \
@@ -454,6 +566,22 @@ cmd_log(){
               --jq '.[] | [.tagName, (.name // ""), .publishedAt] | join("\u001f")' 2>/dev/null)
   fi
 
+  # ── JSON: the whole timeline as an array of typed events, newest first ──
+  if [ "$json" = 1 ]; then
+    if [ "${#EV[@]}" -eq 0 ]; then printf '[]\n'; return 0; fi
+    local -a objs=(); local type fa fb
+    while IFS=$'\x1f' read -r at type fa fb; do
+      [ -z "$at" ] && continue
+      case "$type" in
+        commit)  objs+=("$(jq -n --argjson ts "$(num "$at")" --arg sha "$fa" --arg title "$fb" '{type:"commit", ts:$ts, sha:$sha, title:$title}')");;
+        pr)      objs+=("$(jq -n --argjson ts "$(num "$at")" --argjson number "$(num "$fa")" --arg title "$fb" '{type:"pr", ts:$ts, number:$number, title:$title}')");;
+        release) objs+=("$(jq -n --argjson ts "$(num "$at")" --arg tag "$fa" --arg name "$fb" '{type:"release", ts:$ts, tag:$tag, name:(if $name=="" then null else $name end)}')");;
+      esac
+    done < <(printf '%s\n' "${EV[@]}" | sort -t $'\x1f' -k1,1nr)
+    if [ "${#objs[@]}" -eq 0 ]; then printf '[]\n'; else printf '%s\n' "${objs[@]}" | jq -s '.'; fi
+    return 0
+  fi
+
   printf "\n  ${BD}vegtam log${X}  ${DIM}·  %s  ·  since %s${X}\n\n" "${SLUG:-$REPO_NAME}" "$since"
   if [ "${#EV[@]}" -eq 0 ]; then note "nothing in the last $since."; printf "\n"; return 0; fi
 
@@ -472,6 +600,114 @@ cmd_log(){
   printf "\n  ${BD}%d events${X} ${DIM}since %s${X}\n\n" "$total" "$since"
 }
 
+# health --json — the same three signals as the human view, as one structured
+# object. Nullable fields (alerts you can't read) come through as JSON null so a
+# consumer can tell "no access" from "zero found". $1 = the repo owner (or "").
+health_json(){
+  local owner="${1:-}"
+
+  # ── alerts ── available:false when we can't read them; open/bySeverity/items null then
+  local alerts_available=false alerts_rows="" open_json=null bysev_json=null items_json=null
+  if [ -n "$SLUG" ] && have gh; then
+    local _ok=1
+    alerts_rows="$(gh api "repos/$SLUG/dependabot/alerts?state=open&per_page=100" \
+      --jq 'def rank: {"critical":0,"high":1,"medium":2,"low":3}[.] // 4;
+            [.[] | {r:(.security_advisory.severity|rank), sev:.security_advisory.severity, num:.number,
+                    pkg:.dependency.package.name, sum:.security_advisory.summary}]
+            | sort_by(.r) | .[] | [.sev,(.num|tostring),.pkg,.sum] | join("\u001f")' 2>/dev/null)" || _ok=0
+    if [ "$_ok" = 1 ]; then
+      alerts_available=true
+      local sevs; sevs="$(cut -d $'\x1f' -f1 <<<"$alerts_rows")"
+      open_json="$([ -n "$alerts_rows" ] && grep -c . <<<"$alerts_rows" || echo 0)"
+      bysev_json="$(jq -n \
+        --argjson c "$(grep -c '^critical$' <<<"$sevs" || true)" --argjson h "$(grep -c '^high$' <<<"$sevs" || true)" \
+        --argjson m "$(grep -c '^medium$' <<<"$sevs" || true)"   --argjson l "$(grep -c '^low$' <<<"$sevs" || true)" \
+        '{critical:$c,high:$h,medium:$m,low:$l}')"
+      local -a ai=(); local sev num pkg sum
+      while IFS=$'\x1f' read -r sev num pkg sum; do [ -z "$sev" ] && continue
+        ai+=("$(jq -n --arg s "$sev" --argjson n "$(num "$num")" --arg p "$pkg" --arg u "$sum" \
+          '{severity:$s,number:$n,package:$p,summary:$u}')")
+      done <<<"$alerts_rows"
+      items_json="$([ "${#ai[@]}" -gt 0 ] && printf '%s\n' "${ai[@]}" | jq -s '.' || echo '[]')"
+    fi
+  fi
+
+  # ── deps ──
+  local have_dependabot=false
+  { [ -f "$RROOT/.github/dependabot.yml" ] || [ -f "$RROOT/.github/dependabot.yaml" ]; } && have_dependabot=true
+  local manifests eco_json="[]"
+  manifests="$(find "$RROOT" -maxdepth 2 \
+    \( -type d \( -name node_modules -o -name vendor -o -name dist -o -name build -o -name .git \) -prune \) \
+    -o "${MANIFEST_FIND_EXPR[@]}" -print 2>/dev/null || true)"
+  [ -n "$manifests" ] && eco_json="$(xargs -n1 basename <<<"$manifests" | while read -r f; do manifest_ecosystem "$f"; done | sort -u | jq -R . | jq -s '.')"
+  local unmonitored=false; [ -n "$manifests" ] && [ "$have_dependabot" = false ] && unmonitored=true
+  local dpr_rows="" dpr_ok=true updpr_json="[]"
+  if [ -n "$SLUG" ] && have gh; then
+    dpr_rows="$(gh pr list -R "$SLUG" --state open --author "app/dependabot" --limit 50 \
+      --json number,title,createdAt --jq '.[] | [(.number|tostring), .title, .createdAt] | join("\u001f")' 2>/dev/null)" || dpr_ok=false
+  else dpr_ok=false; fi
+  if [ -n "$dpr_rows" ]; then
+    local -a dp=(); local dnum dtitle dcreated
+    while IFS=$'\x1f' read -r dnum dtitle dcreated; do [ -z "$dnum" ] && continue
+      dp+=("$(jq -n --argjson n "$(num "$dnum")" --arg t "$dtitle" --arg c "$dcreated" '{number:$n,title:$t,createdAt:$c}')")
+    done <<<"$dpr_rows"
+    updpr_json="$([ "${#dp[@]}" -gt 0 ] && printf '%s\n' "${dp[@]}" | jq -s '.' || echo '[]')"
+  fi
+
+  # ── actions ── (mirrors the human scan: third-party uses: not pinned to a SHA)
+  local workflows=false; [ -d "$RROOT/.github/workflows" ] && workflows=true
+  local -a UNPINNED=(); local wf line
+  while read -r wf; do
+    [ -z "$wf" ] && continue
+    local wfname; wfname="$(basename "$wf")"
+    while IFS= read -r line; do
+      [[ "$line" =~ ^[[:space:]]*-?[[:space:]]*uses:[[:space:]]*([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)@([A-Za-z0-9_./-]+) ]] || continue
+      local action="${BASH_REMATCH[1]}" ref="${BASH_REMATCH[2]}"
+      [ -n "$owner" ] && [[ "$action" == "$owner/"* ]] && continue
+      [[ "$ref" =~ ^[0-9a-f]{40}$ ]] && continue
+      UNPINNED+=("$action"$'\x1f'"$ref"$'\x1f'"$wfname")
+    done < "$wf"
+  done < <(find "$RROOT/.github/workflows" -maxdepth 1 -type f \( -name '*.yml' -o -name '*.yaml' \) 2>/dev/null)
+  local unpinned_json="[]"
+  if [ "${#UNPINNED[@]}" -gt 0 ]; then
+    declare -A LATEST=(); local act
+    if have gh; then
+      while read -r act; do [ -z "$act" ] && continue
+        LATEST[$act]="$(gh api "repos/$act/releases/latest" --jq '.tag_name' 2>/dev/null || true)"
+      done < <(printf '%s\n' "${UNPINNED[@]}" | cut -d $'\x1f' -f1 | sort -u)
+    fi
+    local -a up=(); local u action ref wfn
+    for u in "${UNPINNED[@]}"; do
+      IFS=$'\x1f' read -r action ref wfn <<<"$u"
+      local latest="${LATEST[$action]:-}" outdated=false rmaj lmaj
+      rmaj="$(majnum "$ref")"; lmaj="$(majnum "$latest")"
+      [ -n "$rmaj" ] && [ -n "$lmaj" ] && [ "$lmaj" -gt "$rmaj" ] && outdated=true
+      up+=("$(jq -n --arg a "$action" --arg r "$ref" --arg w "$wfn" --arg l "$latest" --argjson o "$outdated" \
+        '{action:$a,ref:$r,workflow:$w,latest:(if $l=="" then null else $l end),outdated:$o}')")
+    done
+    unpinned_json="$(printf '%s\n' "${up[@]}" | jq -s '.')"
+  fi
+
+  # signals — identical accounting to the human footer
+  local n_alerts=0; [ "$open_json" != null ] && n_alerts="$open_json"
+  local n_dpr=0; [ -n "$dpr_rows" ] && n_dpr="$(grep -c . <<<"$dpr_rows")"
+  local n_unmon=0; [ "$unmonitored" = true ] && n_unmon=1
+  local signals=$(( n_alerts + n_unmon + n_dpr + ${#UNPINNED[@]} ))
+
+  jq -n \
+    --argjson available "$alerts_available" --argjson open "$open_json" \
+    --argjson bysev "$bysev_json" --argjson items "$items_json" \
+    --argjson dependabot "$have_dependabot" --argjson ecosystems "$eco_json" \
+    --argjson unmonitored "$unmonitored" --argjson updchecked "$dpr_ok" --argjson updprs "$updpr_json" \
+    --argjson workflows "$workflows" --argjson unpinned "$unpinned_json" --argjson signals "$signals" \
+    '{
+       alerts: { available:$available, open:$open, bySeverity:$bysev, items:$items },
+       deps:   { dependabotConfigured:$dependabot, ecosystems:$ecosystems, unmonitored:$unmonitored, updatePRsChecked:$updchecked, updatePRs:$updprs },
+       actions:{ workflows:$workflows, unpinned:$unpinned },
+       signals: $signals
+     }'
+}
+
 # ── health — security & freshness, best-effort and access-aware ───────────────
 # Three neutral, widely-recommended signals: open Dependabot alerts, dependency
 # freshness, and unpinned third-party actions. Every remote piece degrades to a
@@ -479,8 +715,17 @@ cmd_log(){
 # (alerts in particular require security read, which a contributor usually lacks).
 cmd_health(){
   is_help "${1:-}" && { help_health; return 0; }
+  local json=0 a
+  for a in "$@"; do case "$a" in
+    --json) json=1;;
+    -*) printf "  ${Y}ignoring unknown option: %s${X}\n" "$a";;
+  esac; done
+  [ "$json" = 1 ] && { json_ok || return 1; }
   resolve_repo || return 1
   local owner=""; [ -n "$SLUG" ] && owner="${SLUG%%/*}"
+  # Machine-readable output takes a separate emitter so the (validated) human
+  # renderer below stays untouched. Both draw the same three signals the same way.
+  [ "$json" = 1 ] && { health_json "$owner"; return $?; }
   local signals=0
 
   printf "\n  ${BD}vegtam health${X}  ${DIM}·  %s  ·  security & freshness${X}\n\n" "${SLUG:-$REPO_NAME}"
@@ -793,7 +1038,7 @@ cmd_pr(){
 
 # ── per-command help ──────────────────────────────────────────────────────────
 help_status(){
-  printf "\n  ${BD}vegtam status${X} [--fetch]\n\n"
+  printf "\n  ${BD}vegtam status${X} [--fetch] [--json]\n\n"
   printf "  A one-screen briefing on the repo you're standing in — the flagship view.\n"
   printf "  Fast and local by default; the GitHub-backed lines degrade to a note when gh\n"
   printf "  is missing, the remote isn't GitHub, or you don't have access.\n\n"
@@ -804,7 +1049,8 @@ help_status(){
   printf "    latest commit, its CI status, and how long ago\n"
   printf "    open PR and issue counts\n\n"
   printf "  ${BD}Options${X}\n"
-  printf "    -f, --fetch   git fetch first for fresh ahead/behind ${DIM}(network)${X}\n\n"
+  printf "    -f, --fetch   git fetch first for fresh ahead/behind ${DIM}(network)${X}\n"
+  printf "    --json        emit the briefing as one JSON object ${DIM}(needs jq)${X}\n\n"
 }
 help_branches(){
   printf "\n  ${BD}vegtam branches${X} [--fetch]\n\n"
@@ -813,14 +1059,17 @@ help_branches(){
   printf "  default branch, and how long since its last commit. Then the branches on ${BD}origin${X}\n"
   printf "  you don't have locally. ${BD}Read-only${X} — it reports, it never deletes.\n\n"
   printf "  ${BD}Options${X}\n"
-  printf "    -f, --fetch   git fetch --prune first, for fresh tracking + remote branches ${DIM}(network)${X}\n\n"
+  printf "    -f, --fetch   git fetch --prune first, for fresh tracking + remote branches ${DIM}(network)${X}\n"
+  printf "    --json        emit local + remote-only branches as JSON ${DIM}(needs jq)${X}\n\n"
 }
 help_prs(){
-  printf "\n  ${BD}vegtam prs${X}\n\n"
+  printf "\n  ${BD}vegtam prs${X} [--json]\n\n"
   printf "  Open pull requests on the current repo, each with a CI glyph ${DIM}(${X}${G}✓${X}${DIM} pass · ${X}${R}✗${X}${DIM} fail ·\n"
   printf "  ${X}${Y}●${X}${DIM} running · · none)${X}, its source branch, author, and age. PRs you authored are\n"
   printf "  tagged ${C}(you)${X}. ${DIM}Network — one 'gh pr list'. Degrades to a note without gh, without a\n"
   printf "  GitHub remote, or when you can't read the repo.${X}\n\n"
+  printf "  ${BD}Options${X}\n"
+  printf "    --json        emit the open PRs as a JSON array ${DIM}(needs jq)${X}\n\n"
 }
 help_log(){
   printf "\n  ${BD}vegtam log${X} [--since <window>]\n\n"
@@ -828,7 +1077,8 @@ help_log(){
   printf "  branch ${DIM}(●)${X}, merged PRs ${DIM}(⑃)${X}, and releases ${DIM}(⚑)${X}. The GitHub events need gh; the\n"
   printf "  commit stream always works.\n\n"
   printf "  ${BD}Options${X}\n"
-  printf "    --since <window>   how far back to look — ${BD}6h${X} · ${BD}3d${X} · ${BD}2w${X} ${DIM}(default)${X} · ${BD}1mo${X}\n\n"
+  printf "    --since <window>   how far back to look — ${BD}6h${X} · ${BD}3d${X} · ${BD}2w${X} ${DIM}(default)${X} · ${BD}1mo${X}\n"
+  printf "    --json             emit the timeline as a JSON array ${DIM}(needs jq)${X}\n\n"
 }
 help_health(){
   printf "\n  ${BD}vegtam health${X}\n\n"
@@ -841,6 +1091,9 @@ help_health(){
   printf "              hardening recommendation), flagged outdated when a newer major exists${X}\n\n"
   printf "  ${DIM}Reports what is; it doesn't judge the repo against anyone's house style, and it\n"
   printf "  changes nothing. Network for the GitHub pieces; the local scans always run.${X}\n\n"
+  printf "  ${BD}Options${X}\n"
+  printf "    --json    emit the three signals as one structured object ${DIM}(needs jq; null where\n"
+  printf "              a section can't be read, so you can tell \"no access\" from \"none found\")${X}\n\n"
 }
 help_sync(){
   printf "\n  ${BD}vegtam sync${X}\n\n"
@@ -882,7 +1135,7 @@ help_pr(){
 # ── help ──────────────────────────────────────────────────────────────────────
 cmd_help(){
   printf "\n  ${BD}vegtam${X} ${DIM}— the wanderer · one repo, wherever you're standing · v%s${X}\n\n" "$VERSION"
-  printf "  ${DIM}inspect${X}\n"
+  printf "  ${DIM}inspect${X} ${DIM}· every view takes --json${X}\n"
   printf "    ${BD}status${X}                one-screen briefing on the current repo ${DIM}(default)${X}\n"
   printf "    ${BD}branches${X}              local + remote branches: tracking, merged, stale\n"
   printf "    ${BD}prs${X}                   open pull requests with their CI status\n"

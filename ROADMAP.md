@@ -10,10 +10,10 @@ focused PR._
 - [x] **v0.3.0 — `health`** · Dependabot alerts, outdated deps, unpinned actions; graceful
   degradation when access is denied.
 - [x] **v0.4.0 — safe actions** · `sync` (ff-only), `tidy` (dry-run by default), `branch`, `pr`.
+- [x] **v0.5.0 — polish + docs** · shellcheck CI gate, README written for adoption, `--json` on
+  every inspect view.
 
 ## Next
-- [ ] **v0.5.0 — polish + docs** · shellcheck CI gate, README written for adoption, `--json`
-  where it helps.
 - [ ] **v1.0.0 — release** · curl-installable to `~/.local/bin/vegtam`, tagged, public.
 
 ## Out of scope (by design)
