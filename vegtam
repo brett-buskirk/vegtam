@@ -17,7 +17,7 @@
 # shellcheck disable=SC2059  # color vars are fixed ANSI codes, deliberately embedded in format strings
 set -uo pipefail
 
-VERSION="0.3.0"
+VERSION="0.4.0"
 
 # ── palette — color only on a TTY, and never when NO_COLOR is set ─────────────
 # Same convention as the rest of the pack: if stdout isn't a terminal (piped,
@@ -605,6 +605,192 @@ cmd_health(){
   else printf "\n  ${BD}%d signal%s${X} ${DIM}to look at across alerts · deps · actions${X}\n\n" "$signals" "$(plural "$signals")"; fi
 }
 
+# ── safe actions ──────────────────────────────────────────────────────────────
+# The only commands that change anything. All four are local- and self-scoped:
+# they help you work *in* this repo, never "clean up" someone else's. Nothing here
+# deletes remote branches, closes others' PRs, or rewrites history. tidy is the one
+# with teeth, so it borrows freki's spine: dry-run by default, --apply to act.
+
+# Ask once, reading /dev/tty directly so a piped/redirected stdin can't silently
+# auto-confirm a destructive batch. Returns 0 to proceed, 1 to abort.
+# Probe that /dev/tty can actually be OPENED, not just that it exists+is readable:
+# in some sandboxes the node is present (so `[ -r /dev/tty ]` passes) yet opening it
+# fails, so we test the real redirection and treat any failure as "no terminal".
+confirm(){
+  local reply=""
+  if ! { : < /dev/tty; } 2>/dev/null; then
+    printf "  ${Y}no usable terminal for confirmation — pass --yes to proceed non-interactively.${X}\n" >&2
+    return 1
+  fi
+  printf "  ${Y}%s${X} ${DIM}[y/N]${X} " "$1" > /dev/tty 2>/dev/null
+  read -r reply < /dev/tty 2>/dev/null || reply=""
+  case "$reply" in y|Y|yes|YES) return 0;; *) return 1;; esac
+}
+
+# ── sync — fast-forward the current branch to its upstream, and nothing more ──
+cmd_sync(){
+  is_help "${1:-}" && { help_sync; return 0; }
+  resolve_repo || return 1
+  local branch; branch="$(git symbolic-ref --short HEAD 2>/dev/null || echo detached)"
+  printf "\n  ${BD}vegtam sync${X}  ${DIM}·  %s  ·  %s${X}\n\n" "${SLUG:-$REPO_NAME}" "$branch"
+  [ "$branch" = detached ] && { note "detached HEAD — check out a branch before syncing."; printf "\n"; return 1; }
+
+  # Everything keys off the branch's configured upstream; no upstream, nothing to do.
+  local up; up="$(git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null || true)"
+  if [ -z "$up" ]; then
+    note "'$branch' has no upstream — nothing to fast-forward against."
+    note "set one with:  git branch --set-upstream-to=origin/$branch"
+    printf "\n"; return 0
+  fi
+  local remote="${up%%/*}"
+
+  printf "  ${DIM}fetching %s…${X}\n" "$remote"
+  git fetch -q "$remote" 2>/dev/null || { note "couldn't fetch $remote — offline, or no access."; printf "\n"; return 1; }
+
+  # ahead/behind vs the freshly-updated upstream. behind=commits to pull, ahead=your own.
+  local ab ahead=0 behind=0
+  if ab="$(git rev-list --left-right --count '@{upstream}...HEAD' 2>/dev/null)"; then
+    behind="${ab%%[[:space:]]*}"; ahead="${ab##*[[:space:]]}"
+  fi
+
+  if [ "$behind" -eq 0 ]; then
+    printf "  ${G}✓ already up to date${X} ${DIM}with %s${X}" "$up"
+    [ "$ahead" -gt 0 ] && printf " ${DIM}(you're %s ahead)${X}" "$ahead"
+    printf "\n\n"; return 0
+  fi
+  if [ "$ahead" -gt 0 ]; then
+    # Diverged: a fast-forward is impossible and reconciling means rebase/merge,
+    # which rewrites or merges history — out of scope for a "safe" sync.
+    printf "  ${Y}diverged${X} ${DIM}— %s ahead, %s behind %s${X}\n" "$ahead" "$behind" "$up"
+    note "sync only fast-forwards; reconcile yourself (git rebase/merge) to keep your $ahead commit(s)."
+    printf "\n"; return 0
+  fi
+
+  # behind-only → a clean fast-forward. git's own --ff-only refuses to overwrite
+  # uncommitted changes, so a dirty tree can't be clobbered; we just flag it.
+  [ -n "$(git status --porcelain 2>/dev/null)" ] && note "working tree is dirty — git will refuse the fast-forward if it would overwrite your changes."
+  if git merge --ff-only -q '@{upstream}' 2>/dev/null; then
+    printf "  ${G}✓ fast-forwarded${X} %s ${DIM}·${X} ${BD}+%s${X} ${DIM}commit%s → %s${X}\n\n" "$branch" "$behind" "$(plural "$behind")" "$(git rev-parse --short HEAD)"
+  else
+    printf "  ${R}✗ couldn't fast-forward${X} ${DIM}— local changes are in the way. Commit or stash, then retry.${X}\n\n"; return 1
+  fi
+}
+
+# ── tidy — delete local branches already merged into the default (dry-run first) ──
+cmd_tidy(){
+  is_help "${1:-}" && { help_tidy; return 0; }
+  local APPLY=0 YES=0 a
+  for a in "$@"; do case "$a" in
+    --apply) APPLY=1;; --yes|-y) YES=1;;
+    -*) printf "  ${Y}ignoring unknown option: %s${X}\n" "$a";;
+  esac; done
+  resolve_repo || return 1
+
+  local def cur defref; def="$(default_branch)"; defref="$(default_ref "$def")"
+  cur="$(git symbolic-ref --short HEAD 2>/dev/null || echo detached)"
+
+  printf "\n  ${BD}vegtam tidy${X}  ${DIM}·  %s  ·  merged local branches · %s${X}\n\n" \
+    "${SLUG:-$REPO_NAME}" "$([ "$APPLY" = 1 ] && echo 'APPLY' || echo 'dry-run')"
+
+  # Refuse to guess when there's no real default branch to measure "merged" against —
+  # falling back to HEAD could mark branches merged into a feature branch as deletable.
+  if [ "$defref" = "HEAD" ]; then
+    note "couldn't resolve a default branch (no origin/$def or local $def) — refusing to guess what's merged."
+    printf "\n"; return 0
+  fi
+
+  # Candidates: local branches fully merged into the default, never the default
+  # branch itself and never the one you're standing on.
+  local -a CAND=(); local b
+  while read -r b; do
+    [ -z "$b" ] && continue
+    [ "$b" = "$def" ] && continue
+    [ "$b" = "$cur" ] && continue
+    CAND+=("$b")
+  done < <(git for-each-ref --format='%(refname:short)' --merged "$defref" refs/heads 2>/dev/null)
+
+  if [ "${#CAND[@]}" -eq 0 ]; then
+    printf "  ${G}✓ nothing to tidy${X} ${DIM}(no merged local branches besides %s%s)${X}\n\n" \
+      "$def" "$([ "$cur" != "$def" ] && echo " and the current branch")"
+    return 0
+  fi
+
+  for b in "${CAND[@]}"; do
+    local ts; ts="$(git log -1 --format=%ct "$b" 2>/dev/null)"
+    printf "    ${DIM}∙${X} %-30s ${G}merged${X} ${DIM}· %s${X}\n" "$b" "$(age_short "${ts:-0}")"
+  done
+
+  # "branch" pluralizes to "branches", which plural()'s bare -s can't do.
+  local nb="${#CAND[@]}" noun; [ "$nb" = 1 ] && noun="branch" || noun="branches"
+
+  if [ "$APPLY" != 1 ]; then
+    printf "\n  ${DIM}%d merged %s · 'vegtam tidy --apply' deletes them (git branch -d — never the default or current branch, never anything on the remote)${X}\n\n" \
+      "$nb" "$noun"
+    return 0
+  fi
+
+  printf "\n"
+  if [ "$YES" != 1 ] && ! confirm "delete $nb merged $noun?"; then
+    printf "  ${DIM}aborted — nothing deleted.${X}\n\n"; return 0
+  fi
+  local deleted=0 failed=0
+  for b in "${CAND[@]}"; do
+    # -d (not -D) is the safety net: git refuses to delete anything not fully merged.
+    if git branch -d "$b" >/dev/null 2>&1; then printf "  ${G}✓ deleted${X} %s\n" "$b"; deleted=$((deleted+1))
+    else printf "  ${R}✗ couldn't delete${X} %s ${DIM}(not fully merged?)${X}\n" "$b"; failed=$((failed+1)); fi
+  done
+  printf "\n  ${BD}%d deleted${X}%s\n\n" "$deleted" "$([ "$failed" -gt 0 ] && printf " ${DIM}·${X} ${R}%d failed${X}" "$failed")"
+}
+
+# ── branch — create + switch to a branch (or just switch if it already exists) ──
+cmd_branch(){
+  is_help "${1:-}" && { help_branch; return 0; }
+  local name="" a
+  for a in "$@"; do case "$a" in
+    -*) printf "  ${Y}ignoring unknown option: %s${X}\n" "$a";;
+    *) [ -z "$name" ] && name="$a";;
+  esac; done
+  resolve_repo || return 1
+  [ -z "$name" ] && { printf "\n  ${R}usage:${X} vegtam branch <name>\n\n"; return 1; }
+
+  # If it already exists, switch to it rather than fail — the intent is "put me on <name>".
+  if git rev-parse --verify -q "refs/heads/$name" >/dev/null 2>&1; then
+    if git checkout -q "$name" 2>/dev/null; then
+      printf "\n  ${G}✓ switched to${X} ${C}${BD}%s${X} ${DIM}(already existed)${X}\n\n" "$name"
+    else
+      printf "\n  ${R}✗ couldn't switch to %s${X} ${DIM}(uncommitted changes in the way — commit or stash first).${X}\n\n" "$name"; return 1
+    fi
+    return 0
+  fi
+  if git checkout -q -b "$name" 2>/dev/null; then
+    printf "\n  ${G}✓ created + switched to${X} ${C}${BD}%s${X} ${DIM}(from %s)${X}\n\n" "$name" "$(git rev-parse --abbrev-ref '@{-1}' 2>/dev/null || echo HEAD)"
+  else
+    printf "\n  ${R}✗ couldn't create %s${X} ${DIM}(invalid branch name, or uncommitted changes in the way).${X}\n\n" "$name"; return 1
+  fi
+}
+
+# ── pr — open a PR from the current branch (a thin wrapper over gh pr create) ──
+# gh already does the hard parts well — pushing the branch if needed, the fork
+# flow in a repo you can't push to, and prompting for title/body — so we guard the
+# obvious mistakes and hand off, passing through any extra flags (--fill, --draft…).
+cmd_pr(){
+  is_help "${1:-}" && { help_pr; return 0; }
+  resolve_repo || return 1
+  [ -z "$SLUG" ] && { printf "\n  ${R}no github.com remote${X} ${DIM}— 'vegtam pr' opens a pull request on GitHub.${X}\n\n"; return 1; }
+  have gh || { printf "\n  ${R}gh not installed${X} ${DIM}— 'vegtam pr' wraps 'gh pr create'.${X}\n\n"; return 1; }
+
+  local branch def; branch="$(git symbolic-ref --short HEAD 2>/dev/null || echo detached)"; def="$(default_branch)"
+  [ "$branch" = detached ] && { printf "\n  ${R}detached HEAD${X} ${DIM}— check out a branch first.${X}\n\n"; return 1; }
+  if [ "$branch" = "$def" ]; then
+    printf "\n  ${Y}you're on the default branch (%s)${X} ${DIM}— make a feature branch first:${X}  ${BD}vegtam branch <name>${X}\n\n" "$def"
+    return 1
+  fi
+
+  printf "\n  ${BD}vegtam pr${X}  ${DIM}·  %s  ·  %s → %s${X}\n" "$SLUG" "$branch" "$def"
+  printf "  ${DIM}handing off to 'gh pr create' — it pushes the branch if needed, and prompts for the rest.${X}\n\n"
+  gh pr create "$@"
+}
+
 # ── per-command help ──────────────────────────────────────────────────────────
 help_status(){
   printf "\n  ${BD}vegtam status${X} [--fetch]\n\n"
@@ -656,6 +842,42 @@ help_health(){
   printf "  ${DIM}Reports what is; it doesn't judge the repo against anyone's house style, and it\n"
   printf "  changes nothing. Network for the GitHub pieces; the local scans always run.${X}\n\n"
 }
+help_sync(){
+  printf "\n  ${BD}vegtam sync${X}\n\n"
+  printf "  Fetch, then ${BD}fast-forward${X} the current branch to its upstream — nothing more.\n\n"
+  printf "  ${BD}Never${X} rewrites or merges history: if your branch has diverged (you have local\n"
+  printf "  commits the remote doesn't), it says so and stops — reconcile it yourself. A clean\n"
+  printf "  fast-forward proceeds even with an unrelated dirty file; git itself refuses to\n"
+  printf "  overwrite uncommitted changes, so your work is never clobbered. ${DIM}(network — one fetch)${X}\n\n"
+}
+help_tidy(){
+  printf "\n  ${BD}vegtam tidy${X} [--apply] [--yes]\n\n"
+  printf "  Delete local branches already merged into the default branch. ${BD}Dry-run by default${X} —\n"
+  printf "  it lists what it would delete and changes nothing until you add ${BD}--apply${X}.\n\n"
+  printf "  ${BD}Never${X} touches the default branch, the branch you're on, or anything on the remote,\n"
+  printf "  and deletes only with ${BD}git branch -d${X} ${DIM}(which itself refuses a not-fully-merged branch)${X}.\n\n"
+  printf "  ${BD}Options${X}\n"
+  printf "    --apply   actually delete the merged branches ${DIM}(confirms once for the batch)${X}\n"
+  printf "    --yes     skip that confirmation prompt\n\n"
+}
+help_branch(){
+  printf "\n  ${BD}vegtam branch${X} <name>\n\n"
+  printf "  Create a branch and switch to it. If ${BD}<name>${X} already exists, just switches to it\n"
+  printf "  ${DIM}(so it's safe to run twice)${X}. Purely local — nothing is pushed.\n\n"
+  printf "  ${BD}Example${X}\n"
+  printf "    vegtam branch fix/typo-in-readme\n\n"
+}
+help_pr(){
+  printf "\n  ${BD}vegtam pr${X} [gh pr create options…]\n\n"
+  printf "  Open a pull request from the current branch — a thin wrapper over ${BD}gh pr create${X}.\n"
+  printf "  Refuses on a detached HEAD or the default branch; otherwise hands straight off to gh,\n"
+  printf "  which pushes the branch if needed ${DIM}(via a fork when you can't push to origin)${X} and\n"
+  printf "  prompts for title and body. Any extra flags pass through.\n\n"
+  printf "  ${BD}Examples${X}\n"
+  printf "    vegtam pr                    ${DIM}interactive — gh prompts for everything${X}\n"
+  printf "    vegtam pr --fill --web       ${DIM}title/body from commits, then open it in the browser${X}\n"
+  printf "    vegtam pr --draft            ${DIM}open it as a draft${X}\n\n"
+}
 
 # ── help ──────────────────────────────────────────────────────────────────────
 cmd_help(){
@@ -666,6 +888,12 @@ cmd_help(){
   printf "    ${BD}prs${X}                   open pull requests with their CI status\n"
   printf "    ${BD}log${X} [--since w]       timeline of commits, merged PRs, and releases\n"
   printf "    ${BD}health${X}                security & freshness: alerts, deps, unpinned actions\n"
+  printf "  ${DIM}operate${X} ${DIM}· safe, local, self-scoped${X}\n"
+  printf "    ${BD}sync${X}                  fast-forward the current branch to its upstream\n"
+  printf "    ${BD}tidy${X} [--apply]        delete merged local branches ${DIM}(dry-run by default)${X}\n"
+  printf "    ${BD}branch${X} <name>         create + switch to a branch\n"
+  printf "    ${BD}pr${X} [gh opts…]         open a PR from the current branch\n"
+  printf "  ${DIM}reference${X}\n"
   printf "    ${BD}help${X}                  this menu\n\n"
   printf "  ${DIM}run${X} ${BD}vegtam <command> help${X} ${DIM}for details & options on any command.${X}\n\n"
 }
@@ -676,6 +904,10 @@ case "${1:-status}" in
   prs|pulls)           shift; cmd_prs "$@";;
   log|activity)        shift; cmd_log "$@";;
   health|hunt)         shift; cmd_health "$@";;
+  sync)                shift; cmd_sync "$@";;
+  tidy)                shift; cmd_tidy "$@";;
+  branch)              shift; cmd_branch "$@";;
+  pr)                  shift; cmd_pr "$@";;
   help|-h|--help)      cmd_help;;
   -V|--version|version) printf "vegtam %s\n" "$VERSION";;
   *) printf "\n  ${R}unknown command: %s${X}\n" "$1"; cmd_help; exit 1;;

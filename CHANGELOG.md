@@ -7,6 +7,20 @@ All notable changes to vegtam are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
+- **`vegtam sync`** — fetch, then fast-forward the current branch to its upstream. Never merges or
+  rewrites history: a diverged branch is reported and left alone, and git's own `--ff-only` refuses
+  to overwrite uncommitted work.
+- **`vegtam tidy`** — delete local branches already merged into the default branch. **Dry-run by
+  default; `--apply` required** (`--yes` skips the batch confirmation). Never the default or current
+  branch, never anything on the remote; deletes only via `git branch -d`.
+- **`vegtam branch <name>`** — create + switch to a branch (switches if it already exists). Local
+  only.
+- **`vegtam pr`** — open a PR from the current branch; a thin wrapper over `gh pr create` that
+  guards against a detached HEAD or the default branch and passes extra flags through.
+
+## [0.3.0]
+
+### Added
 - **`vegtam health`** (alias `hunt`) — a security & freshness view: open Dependabot alerts by
   severity, dependency freshness (unwatched manifests + open Dependabot update PRs), and
   third-party GitHub Actions not pinned to a commit SHA (flagged outdated when a newer major

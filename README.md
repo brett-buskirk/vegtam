@@ -52,6 +52,10 @@ vegtam branches      local + remote branches: tracking, merged, stale
 vegtam prs           open pull requests with their CI status
 vegtam log           timeline of commits, merged PRs, and releases
 vegtam health        security & freshness: alerts, deps, unpinned actions
+vegtam sync          fast-forward the current branch to its upstream
+vegtam tidy          delete merged local branches (dry-run by default)
+vegtam branch <name> create + switch to a branch
+vegtam pr            open a PR from the current branch
 vegtam help          the menu
 vegtam <cmd> help    detail & options for any command
 vegtam --version     print the version
@@ -102,12 +106,43 @@ access-aware:
 It reports what *is* — it doesn't judge the repo against anyone's house style, and it changes
 nothing.
 
+## Actions — safe, local, self-scoped
+
+The only commands that change anything. Each helps you work *in* this repo; none touch remote
+branches, close others' PRs, or rewrite history.
+
+### `sync`
+
+Fetch, then **fast-forward** the current branch to its upstream — nothing more. If your branch has
+diverged (you have local commits the remote doesn't), it says so and stops; reconciling means a
+rebase or merge, which it won't do for you. A clean fast-forward proceeds even with an unrelated
+dirty file — git itself refuses to overwrite uncommitted changes, so your work is never clobbered.
+
+### `tidy`
+
+Delete local branches already merged into the default branch. **Dry-run by default** — it lists what
+it *would* delete and changes nothing until you add `--apply` (which confirms once for the batch;
+`--yes` skips the prompt). Never the default branch, never the one you're on, never anything on the
+remote, and only via `git branch -d` (which itself refuses a branch that isn't fully merged).
+
+### `branch <name>`
+
+Create a branch and switch to it — or just switch, if it already exists. Purely local; nothing is
+pushed.
+
+### `pr`
+
+Open a pull request from the current branch — a thin wrapper over `gh pr create`. It refuses on a
+detached HEAD or the default branch, then hands off to `gh`, which pushes the branch if needed (via
+a fork when you can't push to origin) and prompts for the rest. Extra flags pass straight through
+(`vegtam pr --fill --draft`).
+
 ## Roadmap
 
-The views ship today. The rest arrives one safe, reviewable piece at a time:
+The views and safe actions ship today. Still ahead:
 
-- **safe local actions** — `sync` (fast-forward only), `tidy` (prune merged local branches,
-  dry-run by default), `branch`, `pr`
+- **polish** — a `shellcheck` CI gate and `--json` output where it helps
+- **v1.0.0** — public, `curl`-installable, tagged
 
 See [ROADMAP.md](ROADMAP.md). Anything remote-mutating or destructive beyond that safe local set is
 deliberately out of scope — that's not what a wanderer is for.
