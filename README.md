@@ -32,13 +32,19 @@ even then, the destructive-adjacent bits are dry-run by default.
 
 Vegtam is a single, self-contained Bash script. Pick whichever fits:
 
+**Homebrew** (macOS / Linux):
+
+```sh
+brew install brett-buskirk/tap/vegtam
+```
+
 **npm** (also gives you `npx vegtam` with no install):
 
 ```sh
 npm install -g vegtam
 ```
 
-**curl** — no Node required, drop it straight on your `PATH`:
+**curl** — no package manager required, drop it straight on your `PATH`:
 
 ```sh
 mkdir -p ~/.local/bin
