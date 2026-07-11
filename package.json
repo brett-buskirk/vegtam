@@ -1,0 +1,38 @@
+{
+  "name": "vegtam",
+  "version": "1.0.1",
+  "description": "The wanderer — a pocket CLI for whatever repo you're standing in: fast read-first views plus a few safe local actions, in any repo, even ones you don't own.",
+  "bin": {
+    "vegtam": "vegtam"
+  },
+  "files": [
+    "vegtam",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "lint": "shellcheck vegtam",
+    "prepublishOnly": "bash -n vegtam && shellcheck vegtam"
+  },
+  "keywords": [
+    "cli",
+    "command-line-tool",
+    "git",
+    "github",
+    "gh-cli",
+    "developer-tools",
+    "devops",
+    "shell",
+    "bash",
+    "git-workflow"
+  ],
+  "author": "Brett Buskirk",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/brett-buskirk/vegtam.git"
+  },
+  "bugs": {
+    "url": "https://github.com/brett-buskirk/vegtam/issues"
+  },
+  "homepage": "https://github.com/brett-buskirk/vegtam#readme"
+}

@@ -7,6 +7,10 @@ All notable changes to vegtam are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
+- **npm packaging** (`package.json`) so Vegtam installs with `npm install -g vegtam` / `npx vegtam` —
+  the `bin` points straight at the Bash script (no Node runtime). The published tarball is lean (the
+  script + README/LICENSE/CHANGELOG only; `files` allowlist), and `prepublishOnly` runs
+  `bash -n` + `shellcheck` as a publish gate. README gains the npm install option.
 - README screenshots — a `status` hero plus section shots for `prs`, `health`, and `tidy`
   (`docs/vegtam-*.png`), rendered as clean terminal-window PNGs from one coherent `acme/webapp`
   example. Regenerate all four with `scripts/screenshot.py` (dev-only; needs `rich` + `cairosvg`).
