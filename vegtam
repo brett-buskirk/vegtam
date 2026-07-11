@@ -17,7 +17,7 @@
 # shellcheck disable=SC2059  # color vars are fixed ANSI codes, deliberately embedded in format strings
 set -uo pipefail
 
-VERSION="1.0.1"
+VERSION="1.0.2"
 
 # ── palette — color only on a TTY, and never when NO_COLOR is set ─────────────
 # Same convention as the rest of the pack: if stdout isn't a terminal (piped,

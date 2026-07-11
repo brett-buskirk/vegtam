@@ -1,6 +1,6 @@
 {
   "name": "vegtam",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "The wanderer — a pocket CLI for whatever repo you're standing in: fast read-first views plus a few safe local actions, in any repo, even ones you don't own.",
   "bin": {
     "vegtam": "vegtam"
