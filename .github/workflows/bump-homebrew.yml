@@ -2,16 +2,22 @@ name: Bump Homebrew formula
 
 # On each published GitHub Release, open a PR to brett-buskirk/homebrew-tap that
 # bumps Formula/vegtam.rb (url + sha256) to the new tag — so a release stays a
-# one-step action and the Homebrew formula never drifts.
+# one-step action and the Homebrew formula never drifts. Can also be run manually
+# (workflow_dispatch) against any tag, for testing or a re-bump.
 #
 # Requires a repo secret HOMEBREW_TAP_TOKEN: a token that can open pull requests
 # on brett-buskirk/homebrew-tap (a fine-grained PAT with Contents + Pull requests
-# write on that repo, or a classic PAT with the `repo` scope). Until it's set, the
-# job skips cleanly rather than failing every release.
+# write on that repo works — this workflow is built for fine-grained tokens). Until
+# it's set, the job skips cleanly rather than failing every release.
 
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to bump the vegtam formula to (e.g. v1.0.2)"
+        required: true
 
 permissions:
   contents: read
@@ -19,14 +25,17 @@ permissions:
 jobs:
   bump:
     runs-on: ubuntu-latest
-    if: ${{ !github.event.release.prerelease }}
+    if: ${{ github.event_name == 'workflow_dispatch' || !github.event.release.prerelease }}
     steps:
-      # Skip gracefully when the cross-repo token hasn't been configured yet.
-      - name: Check for tap token
+      # Resolve the tag (release event or manual input) and skip cleanly when the
+      # cross-repo token hasn't been configured yet.
+      - name: Resolve tag and check token
         id: gate
         env:
           TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          TAG: ${{ github.event.release.tag_name || inputs.tag }}
         run: |
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           if [ -z "$TAP_TOKEN" ]; then
             echo "HOMEBREW_TAP_TOKEN not set — skipping the formula bump."
             echo "ready=false" >> "$GITHUB_OUTPUT"
@@ -34,15 +43,42 @@ jobs:
             echo "ready=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Open formula bump PR on the tap
+      - name: Check out the tap
         if: steps.gate.outputs.ready == 'true'
-        uses: mislav/bump-homebrew-formula-action@v3
+        uses: actions/checkout@v4
         with:
-          formula-name: vegtam
-          formula-path: Formula/vegtam.rb
-          homebrew-tap: brett-buskirk/homebrew-tap
-          base-branch: main
-          create-pullrequest: true
-          download-url: https://github.com/${{ github.repository }}/archive/refs/tags/${{ github.event.release.tag_name }}.tar.gz
+          repository: brett-buskirk/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+
+      # Point the formula at the new tag's tarball and its checksum. Downloaded to
+      # a file (no pipe) so the sha256 is computed from bytes on disk.
+      - name: Bump the vegtam formula
+        if: steps.gate.outputs.ready == 'true'
         env:
-          COMMITTER_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          TAG: ${{ steps.gate.outputs.tag }}
+          REPO: ${{ github.repository }}
+        run: |
+          url="https://github.com/${REPO}/archive/refs/tags/${TAG}.tar.gz"
+          curl -fsSL "$url" -o /tmp/vegtam-src.tar.gz
+          sha="$(sha256sum /tmp/vegtam-src.tar.gz | cut -d' ' -f1)"
+          sed -i -E "s|^  url \".*\"|  url \"${url}\"|" Formula/vegtam.rb
+          sed -i -E "s|^  sha256 \".*\"|  sha256 \"${sha}\"|" Formula/vegtam.rb
+          echo "vegtam formula -> ${TAG} (${sha})"
+
+      # create-pull-request works with fine-grained tokens; sign-commits makes the
+      # commit via the API so it's Verified — satisfying the tap's signed-commit
+      # ruleset. If the formula is already at this version, it opens nothing.
+      - name: Open the bump PR on the tap
+        if: steps.gate.outputs.ready == 'true'
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          sign-commits: true
+          base: main
+          branch: bump-vegtam-${{ steps.gate.outputs.tag }}
+          delete-branch: true
+          title: "vegtam ${{ steps.gate.outputs.tag }}"
+          commit-message: "vegtam ${{ steps.gate.outputs.tag }}"
+          body: |
+            Automated formula bump for **vegtam ${{ steps.gate.outputs.tag }}**,
+            opened by the release workflow in brett-buskirk/vegtam.
