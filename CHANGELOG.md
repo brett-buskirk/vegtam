@@ -6,6 +6,12 @@ All notable changes to vegtam are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-07-11
+
+A distribution + docs release — Vegtam now installs three ways (Homebrew, npm, curl) and the README
+is fully illustrated. No change to the tool's behaviour; the script is functionally identical to
+1.0.1.
+
 ### Added
 - **Homebrew distribution** — `brew install brett-buskirk/tap/vegtam` (formula lives in the
   [brett-buskirk/homebrew-tap](https://github.com/brett-buskirk/homebrew-tap) repo). A
