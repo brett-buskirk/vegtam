@@ -7,6 +7,10 @@ All notable changes to vegtam are documented here. The format is based on
 ## [Unreleased]
 
 ### Added
+- **Homebrew distribution** — `brew install brett-buskirk/tap/vegtam` (formula lives in the
+  [brett-buskirk/homebrew-tap](https://github.com/brett-buskirk/homebrew-tap) repo). A
+  `bump-homebrew` workflow opens a formula-bump PR to the tap on each published release, so the
+  formula never drifts. README gains the Homebrew install option.
 - **npm packaging** (`package.json`) so Vegtam installs with `npm install -g vegtam` / `npx vegtam` —
   the `bin` points straight at the Bash script (no Node runtime). The published tarball is lean (the
   script + README/LICENSE/CHANGELOG only; `files` allowlist), and `prepublishOnly` runs

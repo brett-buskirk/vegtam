@@ -1,0 +1,48 @@
+name: Bump Homebrew formula
+
+# On each published GitHub Release, open a PR to brett-buskirk/homebrew-tap that
+# bumps Formula/vegtam.rb (url + sha256) to the new tag — so a release stays a
+# one-step action and the Homebrew formula never drifts.
+#
+# Requires a repo secret HOMEBREW_TAP_TOKEN: a token that can open pull requests
+# on brett-buskirk/homebrew-tap (a fine-grained PAT with Contents + Pull requests
+# write on that repo, or a classic PAT with the `repo` scope). Until it's set, the
+# job skips cleanly rather than failing every release.
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    if: ${{ !github.event.release.prerelease }}
+    steps:
+      # Skip gracefully when the cross-repo token hasn't been configured yet.
+      - name: Check for tap token
+        id: gate
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [ -z "$TAP_TOKEN" ]; then
+            echo "HOMEBREW_TAP_TOKEN not set — skipping the formula bump."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open formula bump PR on the tap
+        if: steps.gate.outputs.ready == 'true'
+        uses: mislav/bump-homebrew-formula-action@v3
+        with:
+          formula-name: vegtam
+          formula-path: Formula/vegtam.rb
+          homebrew-tap: brett-buskirk/homebrew-tap
+          base-branch: main
+          create-pullrequest: true
+          download-url: https://github.com/${{ github.repository }}/archive/refs/tags/${{ github.event.release.tag_name }}.tar.gz
+        env:
+          COMMITTER_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
