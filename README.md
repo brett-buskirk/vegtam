@@ -30,7 +30,15 @@ even then, the destructive-adjacent bits are dry-run by default.
 
 ## Install
 
-Vegtam is a single, self-contained Bash script. Drop it on your `PATH`:
+Vegtam is a single, self-contained Bash script. Pick whichever fits:
+
+**npm** (also gives you `npx vegtam` with no install):
+
+```sh
+npm install -g vegtam
+```
+
+**curl** — no Node required, drop it straight on your `PATH`:
 
 ```sh
 mkdir -p ~/.local/bin
@@ -38,10 +46,11 @@ curl -fsSL https://raw.githubusercontent.com/brett-buskirk/vegtam/main/vegtam -o
 chmod +x ~/.local/bin/vegtam
 ```
 
-Make sure `~/.local/bin` is on your `PATH`.
+(Make sure `~/.local/bin` is on your `PATH`.)
 
-**Requires** `bash` and `git`. The GitHub CLI (`gh`) unlocks the GitHub-backed sections and `jq`
-enables `--json` output; without them, the local git views still work.
+**Requires** `bash` and `git` — so macOS, Linux, and WSL/Git Bash on Windows. The GitHub CLI (`gh`)
+unlocks the GitHub-backed sections and `jq` enables `--json` output; without them, the local git
+views still work.
 
 ## Usage
 
