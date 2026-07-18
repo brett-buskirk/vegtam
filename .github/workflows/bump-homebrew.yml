@@ -70,7 +70,7 @@ jobs:
       # ruleset. If the formula is already at this version, it opens nothing.
       - name: Open the bump PR on the tap
         if: steps.gate.outputs.ready == 'true'
-        uses: peter-evans/create-pull-request@v7
+        uses: peter-evans/create-pull-request@v8
         with:
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           sign-commits: true
