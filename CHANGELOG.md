@@ -6,6 +6,10 @@ All notable changes to vegtam are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+- **`CHEATSHEET.md`** — a one-page reference to every command, alias, option, and `--json` output
+  shape, plus common recipes. Linked from the README.
+
 ## [1.0.2] - 2026-07-11
 
 A distribution + docs release — Vegtam now installs three ways (Homebrew, npm, curl) and the README
