@@ -75,6 +75,9 @@ vegtam <cmd> help    detail & options for any command
 vegtam --version     print the version
 ```
 
+For a one-page reference to every command, option, and `--json` shape, see the
+[**cheat sheet**](CHEATSHEET.md).
+
 ### `status` — the flagship
 
 One glance tells you where you stand:
