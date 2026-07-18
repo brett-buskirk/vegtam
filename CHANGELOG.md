@@ -10,6 +10,13 @@ All notable changes to vegtam are documented here. The format is based on
 - **`CHEATSHEET.md`** — a one-page reference to every command, alias, option, and `--json` output
   shape, plus common recipes. Linked from the README.
 
+### Changed
+- **SHA-pin the third-party GitHub Actions** in the workflows (`actions/checkout` → `…9c091bb # v7.0.0`,
+  `peter-evans/create-pull-request` → `…5f6978fa # v8.1.1`) — the supply-chain hardening that Vegtam's
+  own `health` command recommends, now practiced here. Dependabot still bumps SHA-pinned actions (it
+  updates the SHA and the version comment together). The first-party `brett-buskirk/agent-gate@v1` is
+  deliberately left on its tag, matching what `health` flags (it skips first-party actions).
+
 ## [1.0.2] - 2026-07-11
 
 A distribution + docs release — Vegtam now installs three ways (Homebrew, npm, curl) and the README
