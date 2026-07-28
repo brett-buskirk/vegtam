@@ -64,12 +64,14 @@ views still work.
 vegtam [status]      one-screen briefing on the current repo (the default)
 vegtam branches      local + remote branches: tracking, merged, stale
 vegtam prs           open pull requests with their CI status
+vegtam issues        open issues: labels, author, age
 vegtam log           timeline of commits, merged PRs, and releases
 vegtam health        security & freshness: alerts, deps, unpinned actions
 vegtam sync          fast-forward the current branch to its upstream
 vegtam tidy          delete merged local branches (dry-run by default)
 vegtam branch <name> create + switch to a branch
 vegtam pr            open a PR from the current branch
+vegtam issue         open an issue on the current repo
 vegtam help          the menu
 vegtam <cmd> help    detail & options for any command
 vegtam --version     print the version
@@ -102,6 +104,11 @@ anything (that's what [`tidy`](#tidy) is for). `--fetch` refreshes tracking and 
 
 Open pull requests, each with a CI glyph (`✓` pass · `✗` fail · `●` running · `·` none), its
 source branch, author, and age. The ones you authored are tagged `(you)`.
+
+### `issues`
+
+Open issues — number, title, labels, author, and age; the ones you opened are tagged `(you)`.
+Issues only, never PRs. Takes `--json`.
 
 <p align="center">
   <img src="docs/vegtam-prs.png" alt="vegtam prs — open pull requests, each with a CI-status glyph, source branch, author and age; your own tagged (you)" width="720">
@@ -143,10 +150,11 @@ vegtam prs --json    | jq '[.[] | select(.mine)]'   # just my open PRs
 vegtam health --json | jq '.alerts.open // 0'       # open Dependabot alerts (null → 0)
 ```
 
-## Actions — safe, local, self-scoped
+## Actions — safe & self-scoped
 
-The only commands that change anything. Each helps you work *in* this repo; none touch remote
-branches, close others' PRs, or rewrite history.
+The only commands that change anything. Each helps you work *in* this repo — managing your local
+branches, or opening your *own* PR or issue. None delete remote branches, close others' work, or
+rewrite history; the destructive-adjacent bits (`tidy`) are dry-run by default.
 
 ### `sync`
 
@@ -177,6 +185,13 @@ Open a pull request from the current branch — a thin wrapper over `gh pr creat
 detached HEAD, the default branch, or a branch with no commits beyond the base (nothing to open),
 then hands off to `gh`, which pushes the branch if needed (via a fork when you can't push to origin)
 and prompts for the rest. Extra flags pass straight through (`vegtam pr --fill --draft`).
+
+### `issue`
+
+Open an issue on the current repo — a thin wrapper over `gh issue create`. Hands off to `gh`, which
+prompts for title and body (or takes them as flags: `vegtam issue --title "…" --label bug`,
+`vegtam issue --web`). Works in any repo with issues enabled, including ones you don't own — the
+lightest way to file a bug in a project you're using.
 
 ## Status
 

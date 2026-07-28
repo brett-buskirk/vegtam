@@ -6,7 +6,14 @@ All notable changes to vegtam are documented here. The format is based on
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-07-28
+
 ### Added
+- **`vegtam issues`** — list open issues on the current repo (number, title, labels, author, age;
+  your own tagged `(you)`), a read view like `prs`. Takes `--json`. Issues only, never PRs.
+- **`vegtam issue`** — open a new issue, a thin wrapper over `gh issue create` (prompts for
+  title/body, or takes them as flags; passthrough). Mirrors `pr`. This fills out the symmetric
+  read/create split: `prs`/`pr`, `issues`/`issue`.
 - **`CHEATSHEET.md`** — a one-page reference to every command, alias, option, and `--json` output
   shape, plus common recipes. Linked from the README.
 
