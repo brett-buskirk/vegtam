@@ -15,19 +15,22 @@ For the narrative version see the [README](README.md); for per-command detail in
 | [`status`](#status) | *(default)* | One-screen briefing on the current repo | `-f`/`--fetch`, `--json` |
 | [`branches`](#branches) | `br` | Local + remote branches: tracking, merged, stale | `-f`/`--fetch`, `--json` |
 | [`prs`](#prs) | `pulls` | Open pull requests with CI status | `--json` |
+| [`issues`](#issues) | | Open issues: labels, author, age | `--json` |
 | [`log`](#log) | `activity` | Timeline of commits, merged PRs, releases | `--since <window>`, `--json` |
 | [`health`](#health) | `hunt` | Security & freshness: alerts, deps, unpinned actions | `--json` |
 | [`sync`](#sync) | | Fast-forward the current branch to its upstream | |
 | [`tidy`](#tidy) | | Delete merged local branches (**dry-run by default**) | `--apply`, `-y`/`--yes` |
 | [`branch`](#branch-name) | | Create + switch to a branch | |
 | [`pr`](#pr) | | Open a PR from the current branch | *(passes flags to `gh pr create`)* |
+| [`issue`](#issue) | | Open an issue on the current repo | *(passes flags to `gh issue create`)* |
 | [`help`](#help--version) | `-h`, `--help` | The command menu | |
 | `version` | `-V`, `--version` | Print the version | |
 
-- **Inspect** views (`status` `branches` `prs` `log` `health`) are read-only and safe anywhere. Each
-  takes `--json`.
-- **Act** commands (`sync` `tidy` `branch` `pr`) are the only ones that change anything — all local
-  and self-scoped. `tidy` is dry-run by default.
+- **Inspect** views (`status` `branches` `prs` `issues` `log` `health`) are read-only and safe
+  anywhere. Each takes `--json`.
+- **Act** commands (`sync` `tidy` `branch` `pr` `issue`) are the only ones that change anything —
+  safe and additive (manage your local branches, or open your own PR/issue). `tidy` is dry-run by
+  default.
 - Running `vegtam` with no command is the same as `vegtam status`.
 
 ---
@@ -120,6 +123,27 @@ vegtam prs --json
 
 Degrades to a note (human) or `[]` + a stderr reason (`--json`) when there's no GitHub remote or no
 `gh`. Distinguishes "no open PRs" from "couldn't read the repo".
+
+---
+
+### `issues`
+
+Open issues (never PRs) — number, title, labels, author, and age. Issues you opened are tagged
+`(you)`.
+
+```sh
+vegtam issues
+vegtam issues --json
+```
+
+| Option | Effect |
+|--------|--------|
+| `--json` | Emit the open issues as a JSON array |
+
+**`--json` item fields:** `number, title, author, labels[], createdAt, mine`.
+
+Degrades to a note (human) or `[]` + a stderr reason (`--json`) when there's no GitHub remote, no
+`gh`, or issues are disabled/unreadable. Distinguishes "no open issues" from "couldn't read".
 
 ---
 
@@ -258,6 +282,22 @@ vegtam pr --base develop   # target a non-default base
 Otherwise it hands off to `gh pr create`, which pushes the branch if needed (via a fork when you
 can't push to origin) and prompts for the rest.
 
+### `issue`
+
+Open an issue on the current repo — a thin wrapper over `gh issue create`. Not branch-based, so it
+only guards "is this a GitHub repo with `gh` available"; extra flags pass straight through. Works in
+any repo with issues enabled, including ones you don't own.
+
+```sh
+vegtam issue                          # interactive — gh prompts for title/body
+vegtam issue --title "…" --body "…"    # non-interactive
+vegtam issue --title "…" --label bug  # with a label
+vegtam issue --web                    # draft it in the browser
+```
+
+**Refuses** when there's no GitHub remote or `gh` isn't installed. (If issues are disabled on the
+repo, `gh issue create` reports that itself.)
+
 ---
 
 ## `help` & version
@@ -286,6 +326,15 @@ vegtam prs
 
 # Just my open PRs, as data
 vegtam prs --json | jq '[.[] | select(.mine)]'
+
+# What are the open issues here?
+vegtam issues
+
+# Open issues labelled "bug", as data
+vegtam issues --json | jq '[.[] | select(.labels | index("bug"))]'
+
+# File a bug in the repo I'm using (works even if I don't own it)
+vegtam issue --title "Crash on empty input" --body "…" --label bug
 
 # Am I behind my upstream? (scriptable)
 vegtam status --json | jq '.behind'

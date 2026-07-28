@@ -37,22 +37,26 @@ clone). That inverts the pack's risk posture, and three invariants follow. They 
 
 One file, `vegtam`, `set -uo pipefail`. Deps: **`bash` + `git` required, `gh` + `jq` optional.** Read
 top→bottom: palette → small helpers (`have` / `note` / `age_short` / `since_to_gitdate` /
-`classify_ci` / `num` / `json_ok` …) → `resolve_repo` + `github_slug` → the five view `cmd_*` (status,
-branches, prs, log, health, with a separate `health_json` emitter) → the four safe-action `cmd_*`
-(sync, tidy, branch, pr) with `confirm` → the `help_*` block → the `case` dispatcher at the bottom.
+`classify_ci` / `num` / `json_ok` …) → `resolve_repo` + `github_slug` → the six view `cmd_*` (status,
+branches, prs, issues, log, health, with a separate `health_json` emitter) → the five safe-action
+`cmd_*` (sync, tidy, branch, pr, issue) with `confirm` → the `help_*` block → the `case` dispatcher at
+the bottom.
 
-Surface: **5 inspect views** (each takes `--json`) + **4 safe actions**. Two-level help
-(`vegtam help`, `vegtam <cmd> help`). Respects `NO_COLOR` and non-TTY output.
+Surface: **6 inspect views** (each takes `--json`) + **5 safe actions**. The read/create split is
+symmetric — `prs`/`pr`, `issues`/`issue` (plural lists, singular creates via a thin `gh … create`
+wrapper). Two-level help (`vegtam help`, `vegtam <cmd> help`). Respects `NO_COLOR` and non-TTY output.
 
 ## Invariants specific to Vegtam
 
 - **Self-contained & zero-config.** No estate dependency: no `$HUGINN_*`, no config file, no
   `exemptions.json`, no scanning sibling directories, none of the pack's `repos()`/`is_exempt`
   helpers. It must stay `curl`-one-file-into-`~/.local/bin`-and-run.
-- **Safe-actions contract.** Only `sync` / `tidy` / `branch` / `pr`. `tidy` is **dry-run by default**
-  (`--apply` to act, and only `git branch -d`). Never delete remote branches, never force, never
-  rewrite history, never touch uncommitted work. Anything beyond this set is out of scope unless it is
-  ownership-gated **and** dry-run by default.
+- **Safe-actions contract.** Only `sync` / `tidy` / `branch` / `pr` / `issue`. All are safe and
+  additive — manage local branches, or open your *own* PR/issue (thin `gh … create` wrappers). `tidy`
+  is **dry-run by default** (`--apply` to act, and only `git branch -d`). Never delete remote branches,
+  never close others' work, never force, never rewrite history, never touch uncommitted work. Anything
+  beyond this set (esp. anything destructive) is out of scope unless it is ownership-gated **and**
+  dry-run by default.
 - **`jq` only behind `--json`.** The human views must run without system `jq` (they use `gh`'s
   embedded `--jq`); `--json` output is gated by `json_ok` and refuses cleanly when `jq` is absent.
 - **Comment for humans.** This is the most-scrutinized thing in the collection because it isn't

@@ -17,7 +17,7 @@
 # shellcheck disable=SC2059  # color vars are fixed ANSI codes, deliberately embedded in format strings
 set -uo pipefail
 
-VERSION="1.0.2"
+VERSION="1.1.0"
 
 # ── palette — color only on a TTY, and never when NO_COLOR is set ─────────────
 # Same convention as the rest of the pack: if stdout isn't a terminal (piped,
@@ -503,6 +503,76 @@ cmd_prs(){
     local age; age="$(age_short "$(date -d "$created" +%s 2>/dev/null || date +%s)")"
     printf "  %s ${BD}#%-4s${X} %s%s%s\n" "$cistr" "$num" "$title" "$dtag" "$you"
     printf "       ${DIM}%s ← @%s · %s ago${X}\n" "$branch" "$author" "$age"
+  done <<< "$rows"
+
+  printf "\n  ${BD}%d open${X}%s\n\n" "$n" "$([ "$mine" -gt 0 ] && printf " ${DIM}·${X} ${C}%d yours${X}" "$mine")"
+}
+
+# ── issues — open issues on the current repo (read-only); highlight your own ──
+cmd_issues(){
+  is_help "${1:-}" && { help_issues; return 0; }
+  local json=0 a
+  for a in "$@"; do case "$a" in
+    --json) json=1;;
+    -*) printf "  ${Y}ignoring unknown option: %s${X}\n" "$a";;
+  esac; done
+  [ "$json" = 1 ] && { json_ok || return 1; }
+  resolve_repo || return 1
+  # Same degradation contract as prs: --json emits [] (+ a stderr reason); the human
+  # view prints an inline note.
+  if [ -z "$SLUG" ]; then
+    [ "$json" = 1 ] && { printf '[]\n'; printf "no github.com remote — issues needs a GitHub repo.\n" >&2; return 0; }
+    printf "\n  ${BD}vegtam issues${X}  ${DIM}·  %s  ·  open issues${X}\n\n" "$REPO_NAME"
+    note "no github.com remote — issues needs a GitHub repo."; printf "\n"; return 0
+  fi
+  if ! have gh; then
+    [ "$json" = 1 ] && { printf '[]\n'; printf "gh not installed — issues needs the GitHub CLI.\n" >&2; return 0; }
+    printf "\n  ${BD}vegtam issues${X}  ${DIM}·  %s  ·  open issues${X}\n\n" "$SLUG"
+    note "gh not installed — issues needs the GitHub CLI."; printf "\n"; return 0
+  fi
+  [ "$json" = 0 ] && printf "\n  ${BD}vegtam issues${X}  ${DIM}·  %s  ·  open issues${X}\n\n" "$SLUG"
+
+  # One list call. gh issue list is issues-only (excludes PRs). Labels ride along —
+  # the useful signal for an issue, in place of a PR's CI — comma-joined per issue.
+  local rows
+  rows="$(gh issue list -R "$SLUG" --state open --limit 50 \
+    --json number,title,author,labels,createdAt \
+    --jq '.[] | [ (.number|tostring), .title, (.author.login // "?"), ([.labels[]?.name] | join(",")), .createdAt ] | join("\u001f")' 2>/dev/null || true)"
+
+  local mylogin; mylogin="$(gh_login)"
+
+  # ── JSON: one object per issue ──
+  if [ "$json" = 1 ]; then
+    local -a objs=(); local num title author labels created
+    while IFS=$'\x1f' read -r num title author labels created; do
+      [ -z "$num" ] && continue
+      local ismine=false; [ -n "$mylogin" ] && [ "$author" = "$mylogin" ] && ismine=true
+      local labels_json="[]"; [ -n "$labels" ] && labels_json="$(printf '%s' "$labels" | jq -R 'split(",")')"
+      objs+=("$(jq -n --argjson number "$(num "$num")" --arg title "$title" --arg author "$author" \
+        --argjson labels "$labels_json" --arg created "$created" --argjson mine "$ismine" \
+        '{number:$number, title:$title, author:$author, labels:$labels, createdAt:$created, mine:$mine}')")
+    done <<< "$rows"
+    if [ "${#objs[@]}" -eq 0 ]; then printf '[]\n'; else printf '%s\n' "${objs[@]}" | jq -s '.'; fi
+    return 0
+  fi
+
+  if [ -z "$rows" ]; then
+    # Tell "genuinely no open issues" apart from "couldn't read / issues disabled".
+    if gh repo view "$SLUG" >/dev/null 2>&1; then printf "  ${G}✓ no open issues${X}\n\n"
+    else note "couldn't read $SLUG on GitHub — no access, the network is down, or issues are disabled."; printf "\n"; fi
+    return 0
+  fi
+
+  local n=0 mine=0 num title author labels created
+  while IFS=$'\x1f' read -r num title author labels created; do
+    [ -z "$num" ] && continue
+    n=$((n+1))
+    local you="" ltag=""
+    [ -n "$mylogin" ] && [ "$author" = "$mylogin" ] && { you="  ${C}(you)${X}"; mine=$((mine+1)); }
+    [ -n "$labels" ] && ltag="  ${Y}[${labels}]${X}"
+    local age; age="$(age_short "$(date -d "$created" +%s 2>/dev/null || date +%s)")"
+    printf "  ${BD}#%-4s${X} %s%s%s\n" "$num" "$title" "$ltag" "$you"
+    printf "       ${DIM}@%s · %s ago${X}\n" "$author" "$age"
   done <<< "$rows"
 
   printf "\n  ${BD}%d open${X}%s\n\n" "$n" "$([ "$mine" -gt 0 ] && printf " ${DIM}·${X} ${C}%d yours${X}" "$mine")"
@@ -1051,6 +1121,20 @@ cmd_pr(){
   gh pr create "$@"
 }
 
+# ── issue — open an issue on the current repo (a thin wrapper over gh issue create) ──
+# Not branch-based, so there's little to guard beyond "is this even a GitHub repo
+# with gh available" — gh does the rest (prompts for title/body, --web, labels…).
+cmd_issue(){
+  is_help "${1:-}" && { help_issue; return 0; }
+  resolve_repo || return 1
+  [ -z "$SLUG" ] && { printf "\n  ${R}no github.com remote${X} ${DIM}— 'vegtam issue' opens an issue on GitHub.${X}\n\n"; return 1; }
+  have gh || { printf "\n  ${R}gh not installed${X} ${DIM}— 'vegtam issue' wraps 'gh issue create'.${X}\n\n"; return 1; }
+
+  printf "\n  ${BD}vegtam issue${X}  ${DIM}·  %s  ·  new issue${X}\n" "$SLUG"
+  printf "  ${DIM}handing off to 'gh issue create' — it prompts for title and body, or takes them as flags.${X}\n\n"
+  gh issue create "$@"
+}
+
 # ── per-command help ──────────────────────────────────────────────────────────
 help_status(){
   printf "\n  ${BD}vegtam status${X} [--fetch] [--json]\n\n"
@@ -1085,6 +1169,14 @@ help_prs(){
   printf "  GitHub remote, or when you can't read the repo.${X}\n\n"
   printf "  ${BD}Options${X}\n"
   printf "    --json        emit the open PRs as a JSON array ${DIM}(needs jq)${X}\n\n"
+}
+help_issues(){
+  printf "\n  ${BD}vegtam issues${X} [--json]\n\n"
+  printf "  Open issues on the current repo — number, title, labels, author, and age. Issues you\n"
+  printf "  opened are tagged ${C}(you)${X}. ${DIM}Network — one 'gh issue list' (issues only, never PRs).\n"
+  printf "  Degrades to a note without gh, without a GitHub remote, or when you can't read the repo.${X}\n\n"
+  printf "  ${BD}Options${X}\n"
+  printf "    --json        emit the open issues as a JSON array ${DIM}(needs jq)${X}\n\n"
 }
 help_log(){
   printf "\n  ${BD}vegtam log${X} [--since <window>]\n\n"
@@ -1147,6 +1239,17 @@ help_pr(){
   printf "    vegtam pr --fill --web       ${DIM}title/body from commits, then open it in the browser${X}\n"
   printf "    vegtam pr --draft            ${DIM}open it as a draft${X}\n\n"
 }
+help_issue(){
+  printf "\n  ${BD}vegtam issue${X} [gh issue create options…]\n\n"
+  printf "  Open a new issue on the current repo — a thin wrapper over ${BD}gh issue create${X}. Hands\n"
+  printf "  straight off to gh, which prompts for title and body (or takes them as flags). Any extra\n"
+  printf "  flags pass through. Works in any repo with issues enabled — including ones you don't own.\n\n"
+  printf "  ${BD}Examples${X}\n"
+  printf "    vegtam issue                             ${DIM}interactive — gh prompts for everything${X}\n"
+  printf "    vegtam issue --title \"…\" --body \"…\"       ${DIM}non-interactive${X}\n"
+  printf "    vegtam issue --title \"…\" --label bug      ${DIM}with a label${X}\n"
+  printf "    vegtam issue --web                       ${DIM}draft it in the browser${X}\n\n"
+}
 
 # ── help ──────────────────────────────────────────────────────────────────────
 cmd_help(){
@@ -1155,6 +1258,7 @@ cmd_help(){
   printf "    ${BD}status${X}                one-screen briefing on the current repo ${DIM}(default)${X}\n"
   printf "    ${BD}branches${X}              local + remote branches: tracking, merged, stale\n"
   printf "    ${BD}prs${X}                   open pull requests with their CI status\n"
+  printf "    ${BD}issues${X}                open issues: labels, author, age\n"
   printf "    ${BD}log${X} [--since w]       timeline of commits, merged PRs, and releases\n"
   printf "    ${BD}health${X}                security & freshness: alerts, deps, unpinned actions\n"
   printf "  ${DIM}operate${X} ${DIM}· safe, local, self-scoped${X}\n"
@@ -1162,6 +1266,7 @@ cmd_help(){
   printf "    ${BD}tidy${X} [--apply]        delete merged local branches ${DIM}(dry-run by default)${X}\n"
   printf "    ${BD}branch${X} <name>         create + switch to a branch\n"
   printf "    ${BD}pr${X} [gh opts…]         open a PR from the current branch\n"
+  printf "    ${BD}issue${X} [gh opts…]      open an issue on the current repo\n"
   printf "  ${DIM}reference${X}\n"
   printf "    ${BD}help${X}                  this menu\n\n"
   printf "  ${DIM}run${X} ${BD}vegtam <command> help${X} ${DIM}for details & options on any command.${X}\n\n"
@@ -1171,12 +1276,14 @@ case "${1:-status}" in
   status)              shift 2>/dev/null || true; cmd_status "$@";;
   branches|br)         shift; cmd_branches "$@";;
   prs|pulls)           shift; cmd_prs "$@";;
+  issues)              shift; cmd_issues "$@";;
   log|activity)        shift; cmd_log "$@";;
   health|hunt)         shift; cmd_health "$@";;
   sync)                shift; cmd_sync "$@";;
   tidy)                shift; cmd_tidy "$@";;
   branch)              shift; cmd_branch "$@";;
   pr)                  shift; cmd_pr "$@";;
+  issue)               shift; cmd_issue "$@";;
   help|-h|--help)      cmd_help;;
   -V|--version|version) printf "vegtam %s\n" "$VERSION";;
   *) printf "\n  ${R}unknown command: %s${X}\n" "$1"; cmd_help; exit 1;;
