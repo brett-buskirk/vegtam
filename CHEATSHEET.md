@@ -208,10 +208,11 @@ vegtam health --json
 
 ---
 
-## Act — safe, local, self-scoped
+## Act — safe & self-scoped
 
-These are the only commands that change anything. None touch remote branches, close others' PRs, or
-rewrite history.
+The only commands that change anything — safe and additive: manage your local branches, or open your
+*own* PR/issue. None delete remote branches, close others' work, or rewrite history; `tidy` is dry-run
+by default.
 
 ### `sync`
 
